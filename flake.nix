@@ -49,12 +49,14 @@
         ]);
         dev-deps = with pkgs; [
           cargo
+          rustc
           rustfmt
           rustPackages.clippy
 
           rust-analyzer
           taplo-cli
           wgsl-analyzer
+          rnix-lsp
         ];
       in
       {
