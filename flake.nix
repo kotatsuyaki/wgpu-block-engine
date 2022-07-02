@@ -46,6 +46,9 @@
           xcbutil
           xcbutilkeysyms
           xcbutilwm
+          libXcursor
+          libXrandr
+          libXi
         ]);
         dev-deps = with pkgs; [
           cargo
