@@ -60,6 +60,8 @@
           taplo-cli
           wgsl-analyzer
           rnix-lsp
+
+          renderdoc
         ];
       in
       {
