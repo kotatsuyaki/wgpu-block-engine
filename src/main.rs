@@ -38,7 +38,7 @@ fn run(handle: Handle) {
         },
         Event::RedrawRequested(window_id) if window_id == window.id() => {
             render.update();
-            let render_result = render.render();
+            let render_result = handle.block_on(render.render());
             match render_result {
                 Ok(_) => {}
                 Err(SurfaceError::Lost | SurfaceError::Outdated) => render.resize(render.size()),

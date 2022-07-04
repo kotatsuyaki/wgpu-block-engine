@@ -13,9 +13,9 @@ version = "0.26.1"
 default-features = false
 features = ["x11", "wayland"]
 
-[dependencies.cgmath]
-version = "0.18.0"
-features = ["rand"]
+[dependencies.glam]
+version = "0.21.2"
+features = ["bytemuck"]
 
 [dependencies.tokio]
 version = "1.19.2"

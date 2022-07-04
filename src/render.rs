@@ -1,11 +1,12 @@
 use std::mem::size_of;
 
 use bytemuck::{Pod, Zeroable};
+use glam::{vec3, Mat4};
+use tracing::error;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::*;
 use winit::{dpi::PhysicalSize, window::Window};
 
-#[derive(Debug)]
 pub struct Render {
     surface: Surface,
     device: Device,
@@ -16,6 +17,8 @@ pub struct Render {
     vertex_buffer: Buffer,
     index_buffer: Buffer,
     num_indices: u32,
+    uniform_buffer: Buffer,
+    uniform_bind_group: BindGroup,
 }
 
 impl Render {
@@ -52,10 +55,24 @@ impl Render {
         };
         surface.configure(&device, &config);
 
+        // Create shader and layouts
         let shader = device.create_shader_module(include_wgsl!("./shader.wgsl"));
+        let uniform_data_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Uniform Data Bind Group Layout"),
+            entries: &[BindGroupLayoutEntry {
+                binding: 0,
+                visibility: ShaderStages::VERTEX,
+                ty: BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("PipelineLayout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&uniform_data_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -97,7 +114,9 @@ impl Render {
             multiview: None,
         });
 
+        // Create data buffers
         let (vertex_data, index_data) = create_vertices();
+
         let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(&vertex_data),
@@ -110,6 +129,22 @@ impl Render {
         });
         let num_indices = index_data.len() as u32;
 
+        // Create uniform buffer
+        let uniform_data = Self::calculate_uniform_data(&config);
+        let uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(&[uniform_data]),
+            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        });
+        let uniform_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("Uniform Bind Group"),
+            layout: &uniform_data_layout,
+            entries: &[BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         Self {
             surface,
             device,
@@ -120,7 +155,24 @@ impl Render {
             vertex_buffer,
             index_buffer,
             num_indices,
+            uniform_buffer,
+            uniform_bind_group,
         }
+    }
+
+    fn calculate_uniform_data(config: &SurfaceConfiguration) -> UniformData {
+        let eye = vec3(1.5, 2.5, 3.0);
+        let center = vec3(0.0, 0.0, 0.0);
+        let up = vec3(0.0, 1.0, 0.0);
+
+        let proj = Mat4::perspective_rh(
+            std::f32::consts::FRAC_PI_4,
+            config.width as f32 / config.height as f32,
+            0.1,
+            100.0,
+        );
+        let view = Mat4::look_at_rh(eye, center, up);
+        UniformData { trans: proj * view }
     }
 
     pub fn size(&self) -> PhysicalSize<u32> {
@@ -135,11 +187,19 @@ impl Render {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
+
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[Self::calculate_uniform_data(&self.config)]),
+        );
     }
 
     pub fn update(&mut self) {}
 
-    pub fn render(&mut self) -> Result<(), SurfaceError> {
+    pub async fn render(&mut self) -> Result<(), SurfaceError> {
+        self.device.push_error_scope(ErrorFilter::Validation);
+
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -170,14 +230,31 @@ impl Render {
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
+        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         drop(render_pass);
 
         self.queue.submit([encoder.finish()]);
+
+        // report on error
+        let err_scope = self.device.pop_error_scope();
+        tokio::spawn(async {
+            let out = err_scope.await;
+            if let Some(err) = out {
+                error!(?err);
+            }
+        });
+
         output.present();
 
         Ok(())
     }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct UniformData {
+    trans: Mat4,
 }
 
 #[repr(C)]
