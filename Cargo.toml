@@ -17,6 +17,11 @@ features = ["x11", "wayland"]
 version = "0.21.2"
 features = ["bytemuck"]
 
+[dependencies.image]
+version = "0.24.2"
+default-features = false
+features = ["png"]
+
 [dependencies.tokio]
 version = "1.19.2"
 features = [

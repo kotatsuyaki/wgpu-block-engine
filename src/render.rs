@@ -1,4 +1,5 @@
 use std::mem::size_of;
+use std::num::NonZeroU32;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{vec3, Mat4};
@@ -14,11 +15,17 @@ pub struct Render {
     pipeline: RenderPipeline,
     size: PhysicalSize<u32>,
     config: SurfaceConfiguration,
+
     vertex_buffer: Buffer,
     index_buffer: Buffer,
     num_indices: u32,
+
     uniform_buffer: Buffer,
     uniform_bind_group: BindGroup,
+
+    #[allow(dead_code)]
+    grass_texture: Texture,
+    grass_bind_group: BindGroup,
 }
 
 impl Render {
@@ -70,9 +77,30 @@ impl Render {
                 count: None,
             }],
         });
+        let grass_bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Grass Texture Bind Group Layout"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Texture {
+                        sample_type: TextureSampleType::Float { filterable: true },
+                        view_dimension: TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::FRAGMENT,
+                    ty: BindingType::Sampler(SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("PipelineLayout"),
-            bind_group_layouts: &[&uniform_data_layout],
+            bind_group_layouts: &[&uniform_data_layout, &grass_bind_group_layout],
             push_constant_ranges: &[],
         });
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
@@ -83,7 +111,7 @@ impl Render {
                 entry_point: "main_vs",
                 buffers: &[VertexBufferLayout {
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &vertex_attr_array![0 => Float32x3, 1 => Float32x3],
+                    attributes: &vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
                     array_stride: size_of::<Vertex>() as BufferAddress,
                 }],
             },
@@ -145,6 +173,66 @@ impl Render {
             }],
         });
 
+        // Load texture
+        let grass_top_img = image::load_from_memory(assets::GRASSTOP)
+            .unwrap()
+            .to_rgba8();
+        let grass_top_size = Extent3d {
+            width: grass_top_img.width(),
+            height: grass_top_img.height(),
+            depth_or_array_layers: 1,
+        };
+        let grass_texture = device.create_texture(&TextureDescriptor {
+            label: Some("Grass Texture"),
+            size: grass_top_size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+        });
+        queue.write_texture(
+            ImageCopyTexture {
+                texture: &grass_texture,
+                mip_level: 0,
+                origin: Origin3d::ZERO,
+                aspect: TextureAspect::All,
+            },
+            &grass_top_img,
+            ImageDataLayout {
+                offset: 0,
+                bytes_per_row: NonZeroU32::new(4 * grass_top_img.width()),
+                rows_per_image: NonZeroU32::new(grass_top_img.height()),
+            },
+            grass_top_size,
+        );
+
+        let grass_texture_view = grass_texture.create_view(&TextureViewDescriptor::default());
+        let grass_texture_sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("Grass Texture Sampler"),
+            address_mode_u: AddressMode::ClampToEdge,
+            address_mode_v: AddressMode::ClampToEdge,
+            address_mode_w: AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Nearest,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: FilterMode::Nearest,
+            ..Default::default()
+        });
+        let grass_bind_group = device.create_bind_group(&BindGroupDescriptor {
+            label: Some("Grass Texture Bind Group"),
+            layout: &grass_bind_group_layout,
+            entries: &[
+                BindGroupEntry {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&grass_texture_view),
+                },
+                BindGroupEntry {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&grass_texture_sampler),
+                },
+            ],
+        });
+
         Self {
             surface,
             device,
@@ -152,11 +240,16 @@ impl Render {
             pipeline,
             size,
             config,
+
             vertex_buffer,
             index_buffer,
             num_indices,
+
             uniform_buffer,
             uniform_bind_group,
+
+            grass_texture,
+            grass_bind_group,
         }
     }
 
@@ -231,6 +324,7 @@ impl Render {
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.grass_bind_group, &[]);
         render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         drop(render_pass);
 
@@ -262,46 +356,51 @@ struct UniformData {
 struct Vertex {
     pos: [f32; 3],
     color: [f32; 3],
+    texcoord: [f32; 2],
 }
 
-impl From<([f32; 3], [f32; 3])> for Vertex {
-    fn from((pos, color): ([f32; 3], [f32; 3])) -> Self {
-        Self { pos, color }
+impl From<([f32; 3], [f32; 3], [f32; 2])> for Vertex {
+    fn from((pos, color, texcoord): ([f32; 3], [f32; 3], [f32; 2])) -> Self {
+        Self {
+            pos,
+            color,
+            texcoord,
+        }
     }
 }
 
 fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
     let vertex_data = [
         // top (0, 0, 1)
-        ([-1., -1., 1.], [1., 0., 0.]),
-        ([1., -1., 1.], [0., 1., 0.]),
-        ([1., 1., 1.], [0., 0., 1.]),
-        ([-1., 1., 1.], [1., 1., 0.]),
+        ([-1., -1., 1.], [1., 0., 0.], [0., 0.]),
+        ([1., -1., 1.], [0., 1., 0.], [1., 0.]),
+        ([1., 1., 1.], [0., 0., 1.], [1., 1.]),
+        ([-1., 1., 1.], [1., 1., 0.], [0., 1.]),
         // bottom (0., 0., -1.)
-        ([-1., 1., -1.], [1., 0., 0.]),
-        ([1., 1., -1.], [0., 1., 0.]),
-        ([1., -1., -1.], [0., 0., 1.]),
-        ([-1., -1., -1.], [1., 1., 0.]),
+        ([-1., 1., -1.], [1., 0., 0.], [0., 0.]),
+        ([1., 1., -1.], [0., 1., 0.], [1., 0.]),
+        ([1., -1., -1.], [0., 0., 1.], [1., 1.]),
+        ([-1., -1., -1.], [1., 1., 0.], [0., 1.]),
         // right (1., 0., 0.)
-        ([1., -1., -1.], [1., 0., 0.]),
-        ([1., 1., -1.], [0., 1., 0.]),
-        ([1., 1., 1.], [0., 0., 1.]),
-        ([1., -1., 1.], [1., 1., 0.]),
+        ([1., -1., -1.], [1., 0., 0.], [0., 0.]),
+        ([1., 1., -1.], [0., 1., 0.], [1., 0.]),
+        ([1., 1., 1.], [0., 0., 1.], [1., 1.]),
+        ([1., -1., 1.], [1., 1., 0.], [0., 1.]),
         // left (-1., 0., 0.)
-        ([-1., -1., 1.], [1., 0., 0.]),
-        ([-1., 1., 1.], [0., 1., 0.]),
-        ([-1., 1., -1.], [0., 0., 1.]),
-        ([-1., -1., -1.], [1., 1., 0.]),
+        ([-1., -1., 1.], [1., 0., 0.], [0., 0.]),
+        ([-1., 1., 1.], [0., 1., 0.], [1., 0.]),
+        ([-1., 1., -1.], [0., 0., 1.], [1., 1.]),
+        ([-1., -1., -1.], [1., 1., 0.], [0., 1.]),
         // front (0., 1., 0.)
-        ([1., 1., -1.], [1., 0., 0.]),
-        ([-1., 1., -1.], [0., 1., 0.]),
-        ([-1., 1., 1.], [0., 0., 1.]),
-        ([1., 1., 1.], [1., 1., 0.]),
+        ([1., 1., -1.], [1., 0., 0.], [0., 0.]),
+        ([-1., 1., -1.], [0., 1., 0.], [1., 0.]),
+        ([-1., 1., 1.], [0., 0., 1.], [1., 1.]),
+        ([1., 1., 1.], [1., 1., 0.], [0., 1.]),
         // back (0., -1., 0.)
-        ([1., -1., 1.], [1., 0., 0.]),
-        ([-1., -1., 1.], [0., 1., 0.]),
-        ([-1., -1., -1.], [0., 0., 1.]),
-        ([1., -1., -1.], [1., 1., 0.]),
+        ([1., -1., 1.], [1., 0., 0.], [0., 0.]),
+        ([-1., -1., 1.], [0., 1., 0.], [1., 0.]),
+        ([-1., -1., -1.], [0., 0., 1.], [1., 1.]),
+        ([1., -1., -1.], [1., 1., 0.], [0., 1.]),
     ]
     .into_iter()
     .map(Into::into)
@@ -318,4 +417,8 @@ fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
     .to_vec();
 
     (vertex_data, index_data)
+}
+
+mod assets {
+    pub const GRASSTOP: &[u8] = include_bytes!("../assets/grass-top.png");
 }
