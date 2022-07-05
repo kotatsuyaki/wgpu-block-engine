@@ -3,7 +3,8 @@ use std::num::NonZeroU32;
 
 use bytemuck::{Pod, Zeroable};
 use glam::{vec3, Mat4};
-use tracing::error;
+use tokio::time::Instant;
+use tracing::{error, info};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::*;
 use winit::{dpi::PhysicalSize, window::Window};
@@ -26,6 +27,9 @@ pub struct Render {
     #[allow(dead_code)]
     grass_texture: Texture,
     grass_bind_group: BindGroup,
+
+    last_update: tokio::time::Instant,
+    angle: f32,
 }
 
 impl Render {
@@ -158,7 +162,7 @@ impl Render {
         let num_indices = index_data.len() as u32;
 
         // Create uniform buffer
-        let uniform_data = Self::calculate_uniform_data(&config);
+        let uniform_data = Self::calculate_uniform_data(&config, 0.);
         let uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniform_data]),
@@ -250,11 +254,16 @@ impl Render {
 
             grass_texture,
             grass_bind_group,
+
+            last_update: Instant::now(),
+            angle: 0.,
         }
     }
 
-    fn calculate_uniform_data(config: &SurfaceConfiguration) -> UniformData {
-        let eye = vec3(1.5, 2.5, 3.0);
+    fn calculate_uniform_data(config: &SurfaceConfiguration, angle: f32) -> UniformData {
+        // let eye = vec3(0.0, -3.0, 2.0);
+        let eye = vec3(3.0 * f32::sin(angle), 3.0, 3.0 * f32::cos(angle));
+        info!(?eye);
         let center = vec3(0.0, 0.0, 0.0);
         let up = vec3(0.0, 1.0, 0.0);
 
@@ -284,11 +293,23 @@ impl Render {
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::cast_slice(&[Self::calculate_uniform_data(&self.config)]),
+            bytemuck::cast_slice(&[Self::calculate_uniform_data(&self.config, self.angle)]),
         );
     }
 
-    pub fn update(&mut self) {}
+    pub fn update(&mut self) {
+        let elapsed = self.last_update.elapsed().as_micros() as f32;
+        self.last_update = Instant::now();
+
+        // 0.1 rad / s = 0.000_000_1 rad / us
+        self.angle += elapsed * 0.000_000_1;
+
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[Self::calculate_uniform_data(&self.config, self.angle)]),
+        );
+    }
 
     pub async fn render(&mut self) -> Result<(), SurfaceError> {
         self.device.push_error_scope(ErrorFilter::Validation);
@@ -370,49 +391,59 @@ impl From<([f32; 3], [f32; 3], [f32; 2])> for Vertex {
 }
 
 fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
+    // Coordinate system
+    //
+    //    (-1,+1,-1)______ (+1,+1,-1)
+    //             /     /|               ^ +y
+    //            /     / |               |
+    // (-1,+1,+1)/_____/(+1,+1,+1)        |
+    //    (-1,-1,-1)-  |  /(+1,-1,-1)     ---> +x
+    //           |     | /               /
+    // (-1,-1,+1)|_____|/(+1,-1,+1)     v +z
+
     let vertex_data = [
-        // top (0, 0, 1)
-        ([-1., -1., 1.], [1., 0., 0.], [0., 0.]),
-        ([1., -1., 1.], [0., 1., 0.], [1., 0.]),
-        ([1., 1., 1.], [0., 0., 1.], [1., 1.]),
-        ([-1., 1., 1.], [1., 1., 0.], [0., 1.]),
-        // bottom (0., 0., -1.)
-        ([-1., 1., -1.], [1., 0., 0.], [0., 0.]),
-        ([1., 1., -1.], [0., 1., 0.], [1., 0.]),
-        ([1., -1., -1.], [0., 0., 1.], [1., 1.]),
-        ([-1., -1., -1.], [1., 1., 0.], [0., 1.]),
-        // right (1., 0., 0.)
-        ([1., -1., -1.], [1., 0., 0.], [0., 0.]),
-        ([1., 1., -1.], [0., 1., 0.], [1., 0.]),
-        ([1., 1., 1.], [0., 0., 1.], [1., 1.]),
-        ([1., -1., 1.], [1., 1., 0.], [0., 1.]),
-        // left (-1., 0., 0.)
-        ([-1., -1., 1.], [1., 0., 0.], [0., 0.]),
-        ([-1., 1., 1.], [0., 1., 0.], [1., 0.]),
-        ([-1., 1., -1.], [0., 0., 1.], [1., 1.]),
-        ([-1., -1., -1.], [1., 1., 0.], [0., 1.]),
-        // front (0., 1., 0.)
-        ([1., 1., -1.], [1., 0., 0.], [0., 0.]),
-        ([-1., 1., -1.], [0., 1., 0.], [1., 0.]),
-        ([-1., 1., 1.], [0., 0., 1.], [1., 1.]),
-        ([1., 1., 1.], [1., 1., 0.], [0., 1.]),
-        // back (0., -1., 0.)
-        ([1., -1., 1.], [1., 0., 0.], [0., 0.]),
-        ([-1., -1., 1.], [0., 1., 0.], [1., 0.]),
-        ([-1., -1., -1.], [0., 0., 1.], [1., 1.]),
-        ([1., -1., -1.], [1., 1., 0.], [0., 1.]),
+        // top
+        ([-1., 1., -1.], [0., 0., 0.], [0., 0.]),
+        ([-1., 1., 1.], [0., 0., 0.], [0., 1.]),
+        ([1., 1., 1.], [0., 0., 0.], [1., 1.]),
+        ([1., 1., -1.], [0., 0., 0.], [1., 0.]),
+        // bottom
+        ([-1., -1., 1.], [0., 0., 0.], [0., 0.]),
+        ([-1., -1., -1.], [0., 0., 0.], [0., 1.]),
+        ([1., -1., -1.], [0., 0., 0.], [1., 1.]),
+        ([1., -1., 1.], [0., 0., 0.], [1., 0.]),
+        // right
+        ([1., 1., 1.], [0., 0., 0.], [0., 0.]),
+        ([1., -1., 1.], [0., 0., 0.], [0., 1.]),
+        ([1., -1., -1.], [0., 0., 0.], [1., 1.]),
+        ([1., 1., -1.], [0., 0., 0.], [1., 0.]),
+        // left
+        ([-1., 1., -1.], [0., 0., 0.], [0., 0.]),
+        ([-1., -1., -1.], [0., 0., 0.], [0., 1.]),
+        ([-1., -1., 1.], [0., 0., 0.], [1., 1.]),
+        ([-1., 1., 1.], [0., 0., 0.], [1., 0.]),
+        // front
+        ([-1., 1., 1.], [0., 0., 0.], [0., 0.]),
+        ([-1., -1., 1.], [0., 0., 0.], [0., 1.]),
+        ([1., -1., 1.], [0., 0., 0.], [1., 1.]),
+        ([1., 1., 1.], [0., 0., 0.], [1., 0.]),
+        // rear
+        ([1., 1., -1.], [0., 0., 0.], [0., 0.]),
+        ([1., -1., -1.], [0., 0., 0.], [0., 1.]),
+        ([-1., -1., -1.], [0., 0., 0.], [1., 1.]),
+        ([-1., 1., -1.], [0., 0., 0.], [1., 0.]),
     ]
     .into_iter()
     .map(Into::into)
     .collect();
 
     let index_data = [
-        0, 1, 2, 2, 3, 0, // top
-        4, 5, 6, 6, 7, 4, // bottom
-        8, 9, 10, 10, 11, 8, // right
-        12, 13, 14, 14, 15, 12, // left
-        16, 17, 18, 18, 19, 16, // front
-        20, 21, 22, 22, 23, 20, // back
+        0, 1, 2, 2, 3, 0, //
+        4, 5, 6, 6, 7, 4, //
+        8, 9, 10, 10, 11, 8, //
+        12, 13, 14, 14, 15, 12, //
+        16, 17, 18, 18, 19, 16, //
+        20, 21, 22, 22, 23, 20, //
     ]
     .to_vec();
 
@@ -420,5 +451,5 @@ fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
 }
 
 mod assets {
-    pub const GRASSTOP: &[u8] = include_bytes!("../assets/grass-top.png");
+    pub const GRASSTOP: &[u8] = include_bytes!("../assets/grass-top-arrow.png");
 }
