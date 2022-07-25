@@ -17,6 +17,10 @@ features = ["x11", "wayland"]
 version = "0.21.2"
 features = ["bytemuck"]
 
+[dependencies.noise]
+git = "https://github.com/Razaekel/noise-rs.git"
+branch = "develop"
+
 [dependencies.image]
 version = "0.24.2"
 default-features = false
@@ -50,5 +54,14 @@ features = ["env-filter"]
 version = "1.9.1"
 features = ["derive"]
 
-[dependencies]
-anyhow = "1.0"
+[dependencies.anyhow]
+version = "1.0"
+
+[dependencies.itertools]
+version = "0.10"
+
+[dependencies.hashbrown]
+version = "0.12"
+
+[profile.release]
+debug = 1

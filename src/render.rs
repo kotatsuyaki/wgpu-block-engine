@@ -1,14 +1,30 @@
+//! Rendering primitives for rendering to host buffer and for rendering the result via the graphics API.
+//!
+//! # Coordinate system
+//!
+//! ```
+//!    (-1,+1,-1)______ (+1,+1,-1)
+//!             /     /|               ^ +y
+//!            /     / |               |
+//! (-1,+1,+1)/_____/(+1,+1,+1)        |
+//!    (-1,-1,-1)-  |  /(+1,-1,-1)     ---> +x
+//!           |     | /               /
+//! (-1,-1,+1)|_____|/(+1,-1,+1)     v +z
+//! ```
+
 use std::mem::size_of;
 use std::num::NonZeroU32;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{vec3, Mat4};
+use glam::{vec3, vec4, Mat4, Vec4};
+use hashbrown::HashMap;
 use tokio::time::Instant;
-use tracing::{error, info};
+use tracing::error;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::*;
 use winit::{dpi::PhysicalSize, window::Window};
 
+/// A collection of objects needed for rendering and presenting.
 pub struct Render {
     surface: Surface,
     device: Device,
@@ -16,10 +32,6 @@ pub struct Render {
     pipeline: RenderPipeline,
     size: PhysicalSize<u32>,
     config: SurfaceConfiguration,
-
-    vertex_buffer: Buffer,
-    index_buffer: Buffer,
-    num_indices: u32,
 
     uniform_buffer: Buffer,
     uniform_bind_group: BindGroup,
@@ -30,6 +42,8 @@ pub struct Render {
 
     last_update: tokio::time::Instant,
     angle: f32,
+
+    rendered: RenderedBufferCollection,
 }
 
 impl Render {
@@ -48,8 +62,13 @@ impl Render {
             .request_device(
                 &DeviceDescriptor {
                     label: None,
-                    limits: Limits::downlevel_defaults(),
-                    features: Features::default(),
+                    limits: Limits {
+                        max_push_constant_size: size_of::<PushConstants>() as u32,
+                        ..Default::default()
+                    },
+                    features: Features::default()
+                        .union(Features::TEXTURE_BINDING_ARRAY)
+                        .union(Features::PUSH_CONSTANTS),
                 },
                 None,
             )
@@ -102,11 +121,16 @@ impl Render {
                 },
             ],
         });
+
         let layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Some("PipelineLayout"),
             bind_group_layouts: &[&uniform_data_layout, &grass_bind_group_layout],
-            push_constant_ranges: &[],
+            push_constant_ranges: &[PushConstantRange {
+                range: 0..16,
+                stages: ShaderStages::VERTEX,
+            }],
         });
+
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Some("RenderPipeline"),
             layout: Some(&layout),
@@ -146,23 +170,8 @@ impl Render {
             multiview: None,
         });
 
-        // Create data buffers
-        let (vertex_data, index_data) = create_vertices();
-
-        let vertex_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertex_data),
-            usage: BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(&index_data),
-            usage: BufferUsages::INDEX,
-        });
-        let num_indices = index_data.len() as u32;
-
         // Create uniform buffer
-        let uniform_data = Self::calculate_uniform_data(&config, 0.);
+        let uniform_data = Self::calculate_uniforms(&config, 0.);
         let uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniform_data]),
@@ -245,10 +254,6 @@ impl Render {
             size,
             config,
 
-            vertex_buffer,
-            index_buffer,
-            num_indices,
-
             uniform_buffer,
             uniform_bind_group,
 
@@ -257,14 +262,14 @@ impl Render {
 
             last_update: Instant::now(),
             angle: 0.,
+
+            rendered: RenderedBufferCollection::new(),
         }
     }
 
-    fn calculate_uniform_data(config: &SurfaceConfiguration, angle: f32) -> UniformData {
-        // let eye = vec3(0.0, -3.0, 2.0);
-        let eye = vec3(3.0 * f32::sin(angle), 3.0, 3.0 * f32::cos(angle));
-        info!(?eye);
-        let center = vec3(0.0, 0.0, 0.0);
+    fn calculate_uniforms(config: &SurfaceConfiguration, _angle: f32) -> Uniforms {
+        let eye = vec3(40.0, 40.0, 40.0);
+        let center = vec3(0.0, 20.0, 0.0);
         let up = vec3(0.0, 1.0, 0.0);
 
         let proj = Mat4::perspective_rh(
@@ -274,7 +279,7 @@ impl Render {
             100.0,
         );
         let view = Mat4::look_at_rh(eye, center, up);
-        UniformData { trans: proj * view }
+        Uniforms { trans: proj * view }
     }
 
     pub fn size(&self) -> PhysicalSize<u32> {
@@ -293,7 +298,7 @@ impl Render {
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::cast_slice(&[Self::calculate_uniform_data(&self.config, self.angle)]),
+            bytemuck::cast_slice(&[Self::calculate_uniforms(&self.config, self.angle)]),
         );
     }
 
@@ -307,7 +312,7 @@ impl Render {
         self.queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::cast_slice(&[Self::calculate_uniform_data(&self.config, self.angle)]),
+            bytemuck::cast_slice(&[Self::calculate_uniforms(&self.config, self.angle)]),
         );
     }
 
@@ -341,14 +346,40 @@ impl Render {
             })],
             depth_stencil_attachment: None,
         });
-        render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), IndexFormat::Uint16);
-        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.grass_bind_group, &[]);
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
-        drop(render_pass);
+        for (&(cx, cy, cz), buffer) in self.rendered.buffers.iter_mut() {
+            let RenderedBufferEntry {
+                host_buffer,
+                dirty,
+                vertex_buffer,
+                index_buffer,
+            } = buffer;
 
+            if host_buffer.indices.is_empty() {
+                continue;
+            }
+
+            if *dirty {
+                self.queue
+                    .write_buffer(vertex_buffer, 0, host_buffer.vertices.as_u8_slice());
+                self.queue
+                    .write_buffer(index_buffer, 0, host_buffer.indices.as_u8_slice());
+                *dirty = false;
+            }
+
+            let push_constants = PushConstants::new((cx, cy, cz));
+
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            render_pass.set_index_buffer(index_buffer.slice(..), IndexFormat::Uint16);
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.grass_bind_group, &[]);
+            render_pass.set_push_constants(ShaderStages::VERTEX, 0, push_constants.as_u8_slice());
+
+            let num_indices = host_buffer.indices.len() as u32;
+            render_pass.draw_indexed(0..num_indices, 0, 0..1);
+        }
+
+        drop(render_pass);
         self.queue.submit([encoder.finish()]);
 
         // report on error
@@ -364,17 +395,109 @@ impl Render {
 
         Ok(())
     }
+
+    pub fn insert_rendered(&mut self, key: RenderedBufferKey, host_buffer: RenderedBuffer) {
+        let vertex_data: &[u8] = bytemuck::cast_slice(&host_buffer.vertices);
+        let index_data: &[u8] = bytemuck::cast_slice(&host_buffer.indices);
+
+        let vertex_buffer = self.device.create_buffer(&BufferDescriptor {
+            label: Some("Vertex Buffer"),
+            size: vertex_data.len() as BufferAddress,
+            usage: BufferUsages::VERTEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let index_buffer = self.device.create_buffer(&BufferDescriptor {
+            label: Some("Index Buffer"),
+            size: index_data.len() as BufferAddress,
+            usage: BufferUsages::INDEX | BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        self.rendered.buffers.insert(
+            key,
+            RenderedBufferEntry {
+                host_buffer,
+                vertex_buffer,
+                index_buffer,
+                dirty: true,
+            },
+        );
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct UniformData {
+struct Uniforms {
     trans: Mat4,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
+struct PushConstants {
+    shift: Vec4,
+}
+
+impl PushConstants {
+    fn new((cx, cy, cz): (i64, i64, i64)) -> Self {
+        Self {
+            shift: vec4(cx as f32 * 16., cy as f32 * 16., cz as f32 * 16., 0.0),
+        }
+    }
+}
+
+/// A host-side rendered buffer containing vertices and indices.
+#[derive(Clone)]
+pub struct RenderedBuffer {
+    vertices: Vec<Vertex>,
+    indices: Vec<u16>,
+    max_index: Option<u16>,
+}
+
+impl RenderedBuffer {
+    pub fn new() -> Self {
+        Self {
+            vertices: vec![],
+            indices: vec![],
+            max_index: None,
+        }
+    }
+
+    pub fn push_face(&mut self, base_face: [Vertex; 4], (sx, sy, sz): (i64, i64, i64)) {
+        self.vertices
+            .extend_from_slice(&shift_face(base_face, (sx as f32, sy as f32, sz as f32)));
+
+        let index_start = self.max_index.map(|i| i + 1).unwrap_or(0);
+        self.max_index = Some(index_start + 3);
+
+        self.indices
+            .extend_from_slice(&shift_indices(FACE_INDICES, index_start));
+    }
+}
+
+pub struct RenderedBufferCollection {
+    buffers: HashMap<RenderedBufferKey, RenderedBufferEntry>,
+}
+
+struct RenderedBufferEntry {
+    host_buffer: RenderedBuffer,
+    vertex_buffer: Buffer,
+    index_buffer: Buffer,
+    dirty: bool,
+}
+
+pub type RenderedBufferKey = (i64, i64, i64);
+
+impl RenderedBufferCollection {
+    fn new() -> Self {
+        Self {
+            buffers: HashMap::new(),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct Vertex {
     pos: [f32; 3],
     color: [f32; 3],
     texcoord: [f32; 2],
@@ -390,66 +513,189 @@ impl From<([f32; 3], [f32; 3], [f32; 2])> for Vertex {
     }
 }
 
-fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
-    // Coordinate system
-    //
-    //    (-1,+1,-1)______ (+1,+1,-1)
-    //             /     /|               ^ +y
-    //            /     / |               |
-    // (-1,+1,+1)/_____/(+1,+1,+1)        |
-    //    (-1,-1,-1)-  |  /(+1,-1,-1)     ---> +x
-    //           |     | /               /
-    // (-1,-1,+1)|_____|/(+1,-1,+1)     v +z
+pub const TOP_FACE: [Vertex; 4] = [
+    Vertex {
+        pos: [0., 1., 0.],
+        color: [0., 0., 0.],
+        texcoord: [0., 0.],
+    },
+    Vertex {
+        pos: [0., 1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [0., 1.],
+    },
+    Vertex {
+        pos: [1., 1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [1., 1.],
+    },
+    Vertex {
+        pos: [1., 1., 0.],
+        color: [0., 0., 0.],
+        texcoord: [1., 0.],
+    },
+];
 
-    let vertex_data = [
-        // top
-        ([-1., 1., -1.], [0., 0., 0.], [0., 0.]),
-        ([-1., 1., 1.], [0., 0., 0.], [0., 1.]),
-        ([1., 1., 1.], [0., 0., 0.], [1., 1.]),
-        ([1., 1., -1.], [0., 0., 0.], [1., 0.]),
-        // bottom
-        ([-1., -1., 1.], [0., 0., 0.], [0., 0.]),
-        ([-1., -1., -1.], [0., 0., 0.], [0., 1.]),
-        ([1., -1., -1.], [0., 0., 0.], [1., 1.]),
-        ([1., -1., 1.], [0., 0., 0.], [1., 0.]),
-        // right
-        ([1., 1., 1.], [0., 0., 0.], [0., 0.]),
-        ([1., -1., 1.], [0., 0., 0.], [0., 1.]),
-        ([1., -1., -1.], [0., 0., 0.], [1., 1.]),
-        ([1., 1., -1.], [0., 0., 0.], [1., 0.]),
-        // left
-        ([-1., 1., -1.], [0., 0., 0.], [0., 0.]),
-        ([-1., -1., -1.], [0., 0., 0.], [0., 1.]),
-        ([-1., -1., 1.], [0., 0., 0.], [1., 1.]),
-        ([-1., 1., 1.], [0., 0., 0.], [1., 0.]),
-        // front
-        ([-1., 1., 1.], [0., 0., 0.], [0., 0.]),
-        ([-1., -1., 1.], [0., 0., 0.], [0., 1.]),
-        ([1., -1., 1.], [0., 0., 0.], [1., 1.]),
-        ([1., 1., 1.], [0., 0., 0.], [1., 0.]),
-        // rear
-        ([1., 1., -1.], [0., 0., 0.], [0., 0.]),
-        ([1., -1., -1.], [0., 0., 0.], [0., 1.]),
-        ([-1., -1., -1.], [0., 0., 0.], [1., 1.]),
-        ([-1., 1., -1.], [0., 0., 0.], [1., 0.]),
-    ]
-    .into_iter()
-    .map(Into::into)
-    .collect();
+pub const BOTTOM_FACE: [Vertex; 4] = [
+    Vertex {
+        pos: [-1., -1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [0., 0.],
+    },
+    Vertex {
+        pos: [-1., -1., -1.],
+        color: [0., 0., 0.],
+        texcoord: [0., 1.],
+    },
+    Vertex {
+        pos: [1., -1., -1.],
+        color: [0., 0., 0.],
+        texcoord: [1., 1.],
+    },
+    Vertex {
+        pos: [1., -1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [1., 0.],
+    },
+];
 
-    let index_data = [
-        0, 1, 2, 2, 3, 0, //
-        4, 5, 6, 6, 7, 4, //
-        8, 9, 10, 10, 11, 8, //
-        12, 13, 14, 14, 15, 12, //
-        16, 17, 18, 18, 19, 16, //
-        20, 21, 22, 22, 23, 20, //
-    ]
-    .to_vec();
+pub const RIGHT_FACE: [Vertex; 4] = [
+    Vertex {
+        pos: [1., 1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [0., 0.],
+    },
+    Vertex {
+        pos: [1., 0., 1.],
+        color: [0., 0., 0.],
+        texcoord: [0., 1.],
+    },
+    Vertex {
+        pos: [1., 0., 0.],
+        color: [0., 0., 0.],
+        texcoord: [1., 1.],
+    },
+    Vertex {
+        pos: [1., 1., 0.],
+        color: [0., 0., 0.],
+        texcoord: [1., 0.],
+    },
+];
 
-    (vertex_data, index_data)
+pub const LEFT_FACE: [Vertex; 4] = [
+    Vertex {
+        pos: [0., 1., 0.],
+        color: [0., 0., 0.],
+        texcoord: [0., 0.],
+    },
+    Vertex {
+        pos: [0., 0., 0.],
+        color: [0., 0., 0.],
+        texcoord: [0., 1.],
+    },
+    Vertex {
+        pos: [0., 0., 1.],
+        color: [0., 0., 0.],
+        texcoord: [1., 1.],
+    },
+    Vertex {
+        pos: [0., 1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [1., 0.],
+    },
+];
+
+pub const FRONT_FACE: [Vertex; 4] = [
+    Vertex {
+        pos: [0., 1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [0., 0.],
+    },
+    Vertex {
+        pos: [0., 0., 1.],
+        color: [0., 0., 0.],
+        texcoord: [0., 1.],
+    },
+    Vertex {
+        pos: [1., 0., 1.],
+        color: [0., 0., 0.],
+        texcoord: [1., 1.],
+    },
+    Vertex {
+        pos: [1., 1., 1.],
+        color: [0., 0., 0.],
+        texcoord: [1., 0.],
+    },
+];
+
+pub const REAR_FACE: [Vertex; 4] = [
+    Vertex {
+        pos: [1., 1., 0.],
+        color: [0., 0., 0.],
+        texcoord: [0., 0.],
+    },
+    Vertex {
+        pos: [1., 0., 0.],
+        color: [0., 0., 0.],
+        texcoord: [0., 1.],
+    },
+    Vertex {
+        pos: [0., 0., 0.],
+        color: [0., 0., 0.],
+        texcoord: [1., 1.],
+    },
+    Vertex {
+        pos: [0., 1., 0.],
+        color: [0., 0., 0.],
+        texcoord: [1., 0.],
+    },
+];
+
+pub fn shift_face(base_face: [Vertex; 4], (dx, dy, dz): (f32, f32, f32)) -> [Vertex; 4] {
+    base_face.map(|mut v| {
+        v.pos = [v.pos[0] + dx, v.pos[1] + dy, v.pos[2] + dz];
+        v
+    })
+}
+
+pub const FACE_INDICES: [u16; 6] = [0, 1, 2, 2, 3, 0];
+
+pub fn shift_indices(base_indices: [u16; 6], start_index: u16) -> [u16; 6] {
+    base_indices.map(|i| i + start_index)
 }
 
 mod assets {
     pub const GRASSTOP: &[u8] = include_bytes!("../assets/grass-top-arrow.png");
+}
+
+trait AsU8Slice<'a> {
+    fn as_u8_slice(self) -> &'a [u8];
+}
+
+impl<'a, T> AsU8Slice<'a> for &'a [T]
+where
+    T: bytemuck::Pod,
+{
+    fn as_u8_slice(self) -> &'a [u8] {
+        bytemuck::cast_slice(self)
+    }
+}
+
+impl<'a, T> AsU8Slice<'a> for &'a T
+where
+    T: bytemuck::Pod,
+{
+    fn as_u8_slice(self) -> &'a [u8] {
+        bytemuck::bytes_of(self)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_push_constants_data_size() {
+        assert_eq!(size_of::<PushConstants>(), 4 * 4);
+    }
 }

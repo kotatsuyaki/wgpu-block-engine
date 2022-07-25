@@ -8,6 +8,10 @@ struct UniformData {
     trans: mat4x4<f32>,
 };
 
+struct PushConstantsData {
+    shift: vec4<f32>,
+};
+
 @group(0) @binding(0)
 var<uniform> uniform_data: UniformData;
 
@@ -15,6 +19,8 @@ var<uniform> uniform_data: UniformData;
 var grass_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var grass_sampler: sampler;
+
+var<push_constant> pc: PushConstantsData;
 
 @vertex
 fn main_vs(
@@ -28,7 +34,7 @@ fn main_vs(
     out.texcoord = texcoord;
 
     out.pos = vec4<f32>(pos, 1.0);
-    out.pos = uniform_data.trans * out.pos;
+    out.pos = uniform_data.trans * out.pos + pc.shift;
 
     return out;
 }
