@@ -2,7 +2,7 @@ use anyhow::Result;
 use itertools::iproduct;
 use render::Render;
 use tokio::runtime::Handle;
-use tracing::{info, instrument, warn};
+use tracing::{info, warn};
 use wgpu::SurfaceError;
 use winit::{event::WindowEvent, event_loop::ControlFlow};
 
@@ -82,7 +82,6 @@ fn re_render_chunks(chunk_collection: &mut chunk::ChunkCollection, render: &mut 
     }
 }
 
-#[instrument(skip(chunk_collection, render))]
 fn re_render_subchunk(
     chunk_collection: &mut chunk::ChunkCollection,
     render: &mut render::Render,

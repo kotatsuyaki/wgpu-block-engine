@@ -3,7 +3,7 @@
 use hashbrown::HashMap;
 use itertools::Itertools;
 use noise::{NoiseFn, OpenSimplex};
-use tracing::{info, instrument};
+use tracing::info;
 
 /// A collection of chunks, indexed by their chunk coordinates `(cx, cz)`.
 pub struct ChunkCollection {
@@ -16,7 +16,6 @@ pub enum GetBlockOutput {
 }
 
 impl ChunkCollection {
-    #[instrument]
     pub fn new() -> Self {
         let mut chunks = HashMap::new();
         let simplex = OpenSimplex::new(0);
