@@ -503,16 +503,6 @@ pub struct Vertex {
     texcoord: [f32; 2],
 }
 
-impl From<([f32; 3], [f32; 3], [f32; 2])> for Vertex {
-    fn from((pos, color, texcoord): ([f32; 3], [f32; 3], [f32; 2])) -> Self {
-        Self {
-            pos,
-            color,
-            texcoord,
-        }
-    }
-}
-
 pub const TOP_FACE: [Vertex; 4] = [
     Vertex {
         pos: [0., 1., 0.],
