@@ -1,10 +1,14 @@
 use anyhow::Result;
+use glam::{vec3, Mat4, Vec3};
 use itertools::iproduct;
 use render::Render;
 use tokio::runtime::Handle;
 use tracing::{info, warn};
 use wgpu::SurfaceError;
-use winit::{event::WindowEvent, event_loop::ControlFlow};
+use winit::{
+    event::{ElementState, VirtualKeyCode, WindowEvent},
+    event_loop::ControlFlow,
+};
 
 mod chunk;
 mod render;
@@ -31,6 +35,8 @@ fn run(handle: Handle) {
     let window = winit::window::Window::new(&event_loop).expect("Failed to create window");
 
     let mut render = handle.block_on(Render::new(&window));
+    let mut spec = Spectator::new((40.0, 40.0, 40.0), 0.4, 0.4);
+    let mut is_cursor_grabbed = false;
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent { event, .. } => match event {
             WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
@@ -38,12 +44,38 @@ fn run(handle: Handle) {
             WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
                 render.resize(*new_inner_size)
             }
+            WindowEvent::KeyboardInput { input, .. } => {
+                if input.state != ElementState::Pressed {
+                    return;
+                }
+                if input.virtual_keycode.is_none() {
+                    return;
+                }
+
+                info!(?input);
+                let keycode = input.virtual_keycode.unwrap();
+                match keycode {
+                    VirtualKeyCode::Space => {
+                        spec.update_eye((0.0, 0.05, 0.0));
+                    }
+                    VirtualKeyCode::LShift => {
+                        spec.update_eye((0.0, -0.05, 0.0));
+                    }
+                    VirtualKeyCode::G => {
+                        window.set_cursor_visible(is_cursor_grabbed);
+                        window.set_cursor_grab(!is_cursor_grabbed).unwrap();
+                        is_cursor_grabbed = !is_cursor_grabbed;
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         },
         Event::MainEventsCleared => {
             // re-render dirty subchunks
             re_render_chunks(&mut chunk_collection, &mut render);
 
+            render.set_view_matrix(spec.view_matrix());
             render.update();
 
             info!("Rendering frame");
@@ -55,6 +87,13 @@ fn run(handle: Handle) {
                 Err(SurfaceError::Timeout) => warn!("Surface timeout"),
             }
         }
+        Event::DeviceEvent { event, .. } => match event {
+            winit::event::DeviceEvent::MouseMotion { delta: (x, y) } => {
+                spec.update_yaw(x as f32 * 0.01);
+                spec.update_pitch(y as f32 * -0.01);
+            }
+            _ => {}
+        },
         _ => {}
     });
 }
@@ -165,4 +204,50 @@ fn re_render_subchunk(
     }
 
     render.insert_rendered((cx, s as i64, cz), buffer);
+}
+
+#[derive(Debug)]
+struct Spectator {
+    /// The view position.
+    eye: Vec3,
+    /// Pitch (up-down rotation axis of head), `0` at the eye level, positive down, in radians.
+    pitch: f32,
+    /// Yaw (horizontal rotation axis of head), `0` towards east, clockwise.
+    yaw: f32,
+}
+
+impl Spectator {
+    fn new(eye: impl Into<Vec3>, pitch: f32, yaw: f32) -> Self {
+        Self {
+            eye: eye.into(),
+            pitch,
+            yaw,
+        }
+    }
+
+    fn update_pitch(&mut self, delta: f32) {
+        self.pitch += delta;
+        self.pitch = self
+            .pitch
+            .clamp(-std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2);
+    }
+
+    fn update_yaw(&mut self, delta: f32) {
+        self.yaw += delta;
+        self.yaw = self.yaw.rem_euclid(std::f32::consts::PI * 2.0);
+    }
+
+    fn update_eye(&mut self, delta: impl Into<Vec3>) {
+        self.eye += delta.into();
+    }
+
+    fn view_matrix(&self) -> Mat4 {
+        info!(?self);
+
+        let look_direction = vec3(f32::cos(self.yaw), f32::sin(self.pitch), f32::sin(self.yaw));
+        let look_point = self.eye + look_direction;
+
+        const UP: Vec3 = vec3(0.0, 1.0, 0.0);
+        Mat4::look_at_rh(self.eye, look_point, UP)
+    }
 }

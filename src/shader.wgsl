@@ -34,7 +34,7 @@ fn main_vs(
     out.texcoord = texcoord;
 
     out.pos = vec4<f32>(pos, 1.0);
-    out.pos = uniform_data.trans * out.pos + pc.shift;
+    out.pos = uniform_data.trans * (out.pos + pc.shift);
 
     return out;
 }

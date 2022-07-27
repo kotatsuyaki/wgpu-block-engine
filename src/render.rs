@@ -16,7 +16,7 @@ use std::mem::size_of;
 use std::num::NonZeroU32;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{vec3, vec4, Mat4, Vec4};
+use glam::{vec4, Mat4, Vec3, Vec4};
 use hashbrown::HashMap;
 use tokio::time::Instant;
 use tracing::error;
@@ -33,6 +33,9 @@ pub struct Render {
     size: PhysicalSize<u32>,
     config: SurfaceConfiguration,
 
+    view_matrix: Mat4,
+
+    uniforms: Uniforms,
     uniform_buffer: Buffer,
     uniform_bind_group: BindGroup,
 
@@ -41,7 +44,6 @@ pub struct Render {
     grass_bind_group: BindGroup,
 
     last_update: tokio::time::Instant,
-    angle: f32,
 
     rendered: RenderedBufferCollection,
 }
@@ -171,10 +173,14 @@ impl Render {
         });
 
         // Create uniform buffer
-        let uniform_data = Self::calculate_uniforms(&config, 0.);
+        let view_matrix = Mat4::look_at_lh(Vec3::X, Vec3::ZERO, Vec3::Y);
+        let uniforms = Uniforms::new(
+            view_matrix,
+            Self::compute_proj_matrix(config.width as f32 / config.height as f32),
+        );
         let uniform_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(&[uniform_data]),
+            contents: uniforms.as_u8_slice(),
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         });
         let uniform_bind_group = device.create_bind_group(&BindGroupDescriptor {
@@ -246,6 +252,7 @@ impl Render {
             ],
         });
 
+        // let uniforms = Uniforms::new(view_matrix)
         Self {
             surface,
             device,
@@ -254,6 +261,9 @@ impl Render {
             size,
             config,
 
+            view_matrix,
+
+            uniforms,
             uniform_buffer,
             uniform_bind_group,
 
@@ -261,25 +271,23 @@ impl Render {
             grass_bind_group,
 
             last_update: Instant::now(),
-            angle: 0.,
 
             rendered: RenderedBufferCollection::new(),
         }
     }
 
-    fn calculate_uniforms(config: &SurfaceConfiguration, _angle: f32) -> Uniforms {
-        let eye = vec3(40.0, 40.0, 40.0);
-        let center = vec3(0.0, 20.0, 0.0);
-        let up = vec3(0.0, 1.0, 0.0);
+    pub fn set_view_matrix(&mut self, mat: Mat4) {
+        self.view_matrix = mat;
+        self.update_uniforms();
+    }
 
-        let proj = Mat4::perspective_rh(
-            std::f32::consts::FRAC_PI_4,
-            config.width as f32 / config.height as f32,
-            0.1,
-            100.0,
-        );
-        let view = Mat4::look_at_rh(eye, center, up);
-        Uniforms { trans: proj * view }
+    fn update_uniforms(&mut self) {
+        let proj = Self::compute_proj_matrix(self.config.width as f32 / self.config.height as f32);
+        self.uniforms = Uniforms::new(self.view_matrix, proj);
+    }
+
+    fn compute_proj_matrix(aspect: f32) -> Mat4 {
+        Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 100.0)
     }
 
     pub fn size(&self) -> PhysicalSize<u32> {
@@ -294,29 +302,19 @@ impl Render {
         self.config.width = size.width;
         self.config.height = size.height;
         self.surface.configure(&self.device, &self.config);
-
-        self.queue.write_buffer(
-            &self.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[Self::calculate_uniforms(&self.config, self.angle)]),
-        );
+        self.update_uniforms();
     }
 
     pub fn update(&mut self) {
-        let elapsed = self.last_update.elapsed().as_micros() as f32;
+        let _elapsed = self.last_update.elapsed().as_micros() as f32;
         self.last_update = Instant::now();
-
-        // 0.1 rad / s = 0.000_000_1 rad / us
-        self.angle += elapsed * 0.000_000_1;
-
-        self.queue.write_buffer(
-            &self.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[Self::calculate_uniforms(&self.config, self.angle)]),
-        );
+        self.update_uniforms();
     }
 
     pub async fn render(&mut self) -> Result<(), SurfaceError> {
+        self.queue
+            .write_buffer(&self.uniform_buffer, 0, self.uniforms.as_u8_slice());
+
         self.device.push_error_scope(ErrorFilter::Validation);
 
         let output = self.surface.get_current_texture()?;
@@ -429,6 +427,12 @@ impl Render {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
     trans: Mat4,
+}
+
+impl Uniforms {
+    fn new(view: Mat4, proj: Mat4) -> Self {
+        Self { trans: proj * view }
+    }
 }
 
 #[repr(C)]
@@ -655,7 +659,7 @@ pub fn shift_indices(base_indices: [u16; 6], start_index: u16) -> [u16; 6] {
 }
 
 mod assets {
-    pub const GRASSTOP: &[u8] = include_bytes!("../assets/grass-top-arrow.png");
+    pub const GRASSTOP: &[u8] = include_bytes!("../assets/grass-top.png");
 }
 
 trait AsU8Slice<'a> {
@@ -683,9 +687,42 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use glam::vec3;
 
     #[test]
     fn test_push_constants_data_size() {
         assert_eq!(size_of::<PushConstants>(), 4 * 4);
+    }
+
+    #[test]
+    fn test_euler() {
+        // Rotate clockwise when looking down for 1/2 pi
+        let mat = Mat4::from_euler(glam::EulerRot::YXZ, -std::f32::consts::FRAC_PI_2, 0.0, 0.0);
+        let v = mat.transform_point3(vec3(1.0, 0.0, 0.0));
+        let u = vec3(0.0, 0.0, 1.0);
+        assert!(v.abs_diff_eq(u, f32::EPSILON), "Got {v}");
+
+        // Rotate clockwise when looking down for 3/2 pi
+        let mat = Mat4::from_euler(
+            glam::EulerRot::YXZ,
+            -std::f32::consts::FRAC_PI_2 * 3.0,
+            0.0,
+            0.0,
+        );
+        let v = mat.transform_point3(vec3(1.0, 0.0, 0.0));
+        let u = vec3(0.0, 0.0, -1.0);
+        assert!(v.abs_diff_eq(u, f32::EPSILON), "Got {v}");
+
+        // Look down for 1/2 pi
+        let mat = Mat4::from_euler(glam::EulerRot::YXZ, 0.0, 0.0, -std::f32::consts::FRAC_PI_2);
+        let v = mat.transform_point3(vec3(1.0, 0.0, 0.0));
+        let u = vec3(0.0, -1.0, 0.0);
+        assert!(v.abs_diff_eq(u, f32::EPSILON), "Got {v}");
+
+        // Look up for 1/4 pi
+        let mat = Mat4::from_euler(glam::EulerRot::YXZ, 0.0, 0.0, std::f32::consts::FRAC_PI_4);
+        let v = mat.transform_point3(vec3(1.0, 0.0, 0.0));
+        let u = vec3(0.0, -1.0, 0.0);
+        assert!(v.abs_diff_eq(u, f32::EPSILON), "Got {v}");
     }
 }
