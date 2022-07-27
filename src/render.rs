@@ -39,8 +39,6 @@ pub struct Render {
     uniform_buffer: Buffer,
     uniform_bind_group: BindGroup,
 
-    #[allow(dead_code)]
-    grass_texture: Texture,
     grass_bind_group: BindGroup,
 
     depth_texture_view: TextureView,
@@ -278,7 +276,6 @@ impl Render {
             uniform_buffer,
             uniform_bind_group,
 
-            grass_texture,
             grass_bind_group,
 
             depth_texture_view,
