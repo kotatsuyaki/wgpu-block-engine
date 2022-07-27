@@ -311,7 +311,12 @@ impl Render {
         self.size = size;
         self.config.width = size.width;
         self.config.height = size.height;
+
         self.surface.configure(&self.device, &self.config);
+        let (_depth_texture, depth_texture_view, _depth_texture_sampler) =
+            create_depth_texture(&self.device, &self.config);
+        self.depth_texture_view = depth_texture_view;
+
         self.update_uniforms();
     }
 
