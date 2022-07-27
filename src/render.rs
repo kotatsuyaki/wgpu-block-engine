@@ -43,6 +43,8 @@ pub struct Render {
     grass_texture: Texture,
     grass_bind_group: BindGroup,
 
+    depth_texture_view: TextureView,
+
     last_update: tokio::time::Instant,
 
     rendered: RenderedBufferCollection,
@@ -86,6 +88,10 @@ impl Render {
             present_mode: PresentMode::Fifo,
         };
         surface.configure(&device, &config);
+
+        // Create depth buffer
+        let (_depth_texture, depth_texture_view, _depth_texture_sampler) =
+            create_depth_texture(&device, &config);
 
         // Create shader and layouts
         let shader = device.create_shader_module(include_wgsl!("./shader.wgsl"));
@@ -163,7 +169,13 @@ impl Render {
                 polygon_mode: PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
+            depth_stencil: Some(DepthStencilState {
+                format: TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil: StencilState::default(),
+                bias: DepthBiasState::default(),
+            }),
             multisample: MultisampleState {
                 count: 1,
                 mask: !0,
@@ -234,7 +246,7 @@ impl Render {
             address_mode_w: AddressMode::ClampToEdge,
             mag_filter: FilterMode::Nearest,
             min_filter: FilterMode::Linear,
-            mipmap_filter: FilterMode::Nearest,
+            mipmap_filter: FilterMode::Linear,
             ..Default::default()
         });
         let grass_bind_group = device.create_bind_group(&BindGroupDescriptor {
@@ -252,7 +264,6 @@ impl Render {
             ],
         });
 
-        // let uniforms = Uniforms::new(view_matrix)
         Self {
             surface,
             device,
@@ -269,6 +280,8 @@ impl Render {
 
             grass_texture,
             grass_bind_group,
+
+            depth_texture_view,
 
             last_update: Instant::now(),
 
@@ -342,7 +355,14 @@ impl Render {
                     store: true,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(RenderPassDepthStencilAttachment {
+                view: &self.depth_texture_view,
+                depth_ops: Some(Operations {
+                    load: LoadOp::Clear(1.0),
+                    store: true,
+                }),
+                stencil_ops: None,
+            }),
         });
         for (&(cx, cy, cz), buffer) in self.rendered.buffers.iter_mut() {
             let RenderedBufferEntry {
@@ -421,6 +441,46 @@ impl Render {
             },
         );
     }
+}
+
+fn create_depth_texture(
+    device: &Device,
+    config: &SurfaceConfiguration,
+) -> (Texture, TextureView, Sampler) {
+    const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
+
+    let size = Extent3d {
+        width: config.width,
+        height: config.height,
+        depth_or_array_layers: 1,
+    };
+    let desc = TextureDescriptor {
+        label: Some("Depth Texture"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+    };
+    let texture = device.create_texture(&desc);
+
+    let view = texture.create_view(&TextureViewDescriptor::default());
+    let sampler = device.create_sampler(&SamplerDescriptor {
+        // 4.
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+        address_mode_w: AddressMode::ClampToEdge,
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        mipmap_filter: FilterMode::Nearest,
+        compare: Some(CompareFunction::LessEqual),
+        lod_min_clamp: -100.0,
+        lod_max_clamp: 100.0,
+        ..Default::default()
+    });
+
+    (texture, view, sampler)
 }
 
 #[repr(C)]
