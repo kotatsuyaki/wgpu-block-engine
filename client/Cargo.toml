@@ -9,7 +9,7 @@ edition = "2021"
 version = "0.13.1"
 
 [dependencies.winit]
-version = "0.27.0"
+version = "0.26.1"
 default-features = false
 features = ["x11", "wayland"]
 
