@@ -5,9 +5,11 @@ use itertools::Itertools;
 use noise::{NoiseFn, OpenSimplex};
 use tracing::info;
 
+use wgpu_block_shared::chunk::{Block, Chunk};
+
 /// A collection of chunks, indexed by their chunk coordinates `(cx, cz)`.
 pub struct ChunkCollection {
-    chunks: HashMap<(i64, i64), Chunk>,
+    chunks: HashMap<(i64, i64), ClientChunk>,
 }
 
 pub enum GetBlockOutput {
@@ -25,7 +27,7 @@ impl ChunkCollection {
             for cz in -3..3_i64 {
                 info!("Generating chunk ({cx}, {cz})");
 
-                let mut chunk = Chunk::default();
+                let mut chunk = ClientChunk::default();
                 chunk.dirty = [true; 16];
                 for lx in 0..16 {
                     for lz in 0..16 {
@@ -56,7 +58,7 @@ impl ChunkCollection {
     /// # Panics
     ///
     /// Panics if the chunk is nonexistent.
-    pub fn get_chunk(&self, (cx, cz): (i64, i64)) -> &Chunk {
+    pub fn get_chunk(&self, (cx, cz): (i64, i64)) -> &ClientChunk {
         &self.chunks[&(cx, cz)]
     }
 
@@ -65,7 +67,7 @@ impl ChunkCollection {
     /// # Panics
     ///
     /// Panics if the chunk is nonexistent.
-    pub fn get_chunk_mut(&mut self, (cx, cz): (i64, i64)) -> &mut Chunk {
+    pub fn get_chunk_mut(&mut self, (cx, cz): (i64, i64)) -> &mut ClientChunk {
         self.chunks.get_mut(&(cx, cz)).unwrap()
     }
 
@@ -99,65 +101,27 @@ impl ChunkCollection {
     }
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct Chunk {
-    subchunks: [SubChunk; 16],
-    /// Whether the subchunk has been mutated since last render. Initially all `true`.
+#[derive(Default)]
+pub struct ClientChunk {
+    chunk: Chunk,
     dirty: [bool; 16],
 }
 
-/// And POD type holding block data for 16x16x16 areas, row-major
-#[derive(Debug, Clone)]
-pub struct SubChunk {
-    blocks: [Block; 16 * 16 * 16],
-}
-
-impl Chunk {
-    fn set(&mut self, (x, y, z): (usize, usize, usize), block: Block) {
-        let subchunk_index = y.div_euclid(16);
-        let sy = y.rem_euclid(16);
-        self.subchunks[subchunk_index].blocks[sy * 16 * 16 + z * 16 + x] = block;
+impl ClientChunk {
+    pub fn set(&mut self, (x, y, z): (usize, usize, usize), block: Block) {
+        self.chunk.set((x, y, z), block)
     }
 
-    fn get(&self, (x, y, z): (usize, usize, usize)) -> Block {
-        let subchunk_index = y.div_euclid(16);
-        let sy = y.rem_euclid(16);
-        self.subchunks[subchunk_index].blocks[sy * 16 * 16 + z * 16 + x]
+    pub fn get(&self, (x, y, z): (usize, usize, usize)) -> Block {
+        self.chunk.get((x, y, z))
     }
 
-    /// Check if the chunk is *dirty* (i.e. needs re-rendering).
     pub fn is_subchunk_dirty(&self, s: usize) -> bool {
         self.dirty[s]
     }
 
     pub fn unmark_subchunk_dirty(&mut self, s: usize) {
         self.dirty[s] = false;
-    }
-}
-
-impl Default for SubChunk {
-    fn default() -> Self {
-        Self {
-            blocks: [Block::Empty; 16 * 16 * 16],
-        }
-    }
-}
-
-#[derive(Default, Debug, Clone, Copy)]
-#[repr(u8)]
-pub enum Block {
-    #[default]
-    Empty,
-    Grass,
-}
-
-impl Block {
-    pub fn is_opaque(&self) -> bool {
-        use Block::*;
-        match self {
-            Empty => false,
-            _ => true,
-        }
     }
 }
 
