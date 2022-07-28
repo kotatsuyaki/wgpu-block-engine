@@ -3,13 +3,13 @@
 //! # Coordinate system
 //!
 //! ```
-//!    (-1,+1,-1)______ (+1,+1,-1)
-//!             /     /|               ^ +y
-//!            /     / |               |
-//! (-1,+1,+1)/_____/(+1,+1,+1)        |
-//!    (-1,-1,-1)-  |  /(+1,-1,-1)     ---> +x
-//!           |     | /               /
-//! (-1,-1,+1)|_____|/(+1,-1,+1)     v +z
+//!    (0, 1, 0)______ (1, 1, 0)
+//!            /     /|              ^ +y
+//!           /     / |              |
+//! (0, 1, 1)/_____/(1, 1, 1)        |
+//!    (0, 0, 0)-  |  /(1, 0, 0)     ---> +x
+//!          |     | /              /
+//! (0, 0, 1)|_____|/(1, 0, 1)     v +z
 //! ```
 
 use std::mem::size_of;
@@ -145,7 +145,7 @@ impl Render {
                 entry_point: "main_vs",
                 buffers: &[VertexBufferLayout {
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
+                    attributes: &vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32],
                     array_stride: size_of::<Vertex>() as BufferAddress,
                 }],
             },
@@ -528,9 +528,21 @@ impl RenderedBuffer {
         }
     }
 
-    pub fn push_face(&mut self, base_face: [Vertex; 4], (sx, sy, sz): (i64, i64, i64)) {
-        self.vertices
-            .extend_from_slice(&shift_face(base_face, (sx as f32, sy as f32, sz as f32)));
+    pub fn _push_face(
+        &mut self,
+        base_face: [Vertex; 4],
+        // Every corner can have 0..=8 opaque blocks
+        opaque_counts: [u8; 4],
+        (sx, sy, sz): (i64, i64, i64),
+    ) {
+        let mut vertices = shift_face(base_face, (sx as f32, sy as f32, sz as f32));
+
+        // subtract 4 so that flat surfaces are bright
+        let sub_opaque_counts = opaque_counts.map(|c| c.saturating_sub(4));
+        for i in 0..4 {
+            vertices[i].brightness = (4.0 - (sub_opaque_counts[i] as f32)) / 4.0;
+        }
+        self.vertices.extend_from_slice(&vertices);
 
         let index_start = self.max_index.map(|i| i + 1).unwrap_or(0);
         self.max_index = Some(index_start + 3);
@@ -564,146 +576,159 @@ impl RenderedBufferCollection {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Vertex {
-    pos: [f32; 3],
-    color: [f32; 3],
-    texcoord: [f32; 2],
+    pub pos: [f32; 3],
+    pub texcoord: [f32; 2],
+    pub brightness: f32,
+}
+
+impl Vertex {
+    const ZERO: Self = Self {
+        pos: [0.0; 3],
+        texcoord: [0.0; 2],
+        brightness: 0.0,
+    };
+
+    pub fn pos_i64(self) -> (i64, i64, i64) {
+        let [x, y, z] = self.pos;
+        (x as i64, y as i64, z as i64)
+    }
 }
 
 pub const TOP_FACE: [Vertex; 4] = [
     Vertex {
         pos: [0., 1., 0.],
-        color: [0., 0., 0.],
         texcoord: [0., 0.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [0., 1., 1.],
-        color: [0., 0., 0.],
         texcoord: [0., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 1., 1.],
-        color: [0., 0., 0.],
         texcoord: [1., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 1., 0.],
-        color: [0., 0., 0.],
         texcoord: [1., 0.],
+        ..Vertex::ZERO
     },
 ];
 
 pub const BOTTOM_FACE: [Vertex; 4] = [
     Vertex {
-        pos: [-1., -1., 1.],
-        color: [0., 0., 0.],
+        pos: [0., 0., 1.],
         texcoord: [0., 0.],
+        ..Vertex::ZERO
     },
     Vertex {
-        pos: [-1., -1., -1.],
-        color: [0., 0., 0.],
+        pos: [0., 0., 0.],
         texcoord: [0., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
-        pos: [1., -1., -1.],
-        color: [0., 0., 0.],
+        pos: [1., 0., 0.],
         texcoord: [1., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
-        pos: [1., -1., 1.],
-        color: [0., 0., 0.],
+        pos: [1., 0., 1.],
         texcoord: [1., 0.],
+        ..Vertex::ZERO
     },
 ];
 
 pub const RIGHT_FACE: [Vertex; 4] = [
     Vertex {
         pos: [1., 1., 1.],
-        color: [0., 0., 0.],
         texcoord: [0., 0.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 0., 1.],
-        color: [0., 0., 0.],
         texcoord: [0., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 0., 0.],
-        color: [0., 0., 0.],
         texcoord: [1., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 1., 0.],
-        color: [0., 0., 0.],
         texcoord: [1., 0.],
+        ..Vertex::ZERO
     },
 ];
 
 pub const LEFT_FACE: [Vertex; 4] = [
     Vertex {
         pos: [0., 1., 0.],
-        color: [0., 0., 0.],
         texcoord: [0., 0.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [0., 0., 0.],
-        color: [0., 0., 0.],
         texcoord: [0., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [0., 0., 1.],
-        color: [0., 0., 0.],
         texcoord: [1., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [0., 1., 1.],
-        color: [0., 0., 0.],
         texcoord: [1., 0.],
+        ..Vertex::ZERO
     },
 ];
 
 pub const FRONT_FACE: [Vertex; 4] = [
     Vertex {
         pos: [0., 1., 1.],
-        color: [0., 0., 0.],
         texcoord: [0., 0.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [0., 0., 1.],
-        color: [0., 0., 0.],
         texcoord: [0., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 0., 1.],
-        color: [0., 0., 0.],
         texcoord: [1., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 1., 1.],
-        color: [0., 0., 0.],
         texcoord: [1., 0.],
+        ..Vertex::ZERO
     },
 ];
 
 pub const REAR_FACE: [Vertex; 4] = [
     Vertex {
         pos: [1., 1., 0.],
-        color: [0., 0., 0.],
         texcoord: [0., 0.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [1., 0., 0.],
-        color: [0., 0., 0.],
         texcoord: [0., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [0., 0., 0.],
-        color: [0., 0., 0.],
         texcoord: [1., 1.],
+        ..Vertex::ZERO
     },
     Vertex {
         pos: [0., 1., 0.],
-        color: [0., 0., 0.],
         texcoord: [1., 0.],
+        ..Vertex::ZERO
     },
 ];
 

@@ -10,6 +10,8 @@ use winit::{
     event_loop::ControlFlow,
 };
 
+use crate::{chunk::MaybeLoadedBlock, render::Vertex};
+
 mod chunk;
 mod render;
 
@@ -149,8 +151,8 @@ fn re_render_subchunk(
 
     for (x, y, z) in iproduct!(x_start..x_end, y_start..y_end, z_start..z_end) {
         let block = match chunk_collection.get_block((x, y, z)) {
-            chunk::GetBlockOutput::Loaded(block) => block,
-            chunk::GetBlockOutput::Unloaded => continue,
+            MaybeLoadedBlock::Loaded(block) => block,
+            MaybeLoadedBlock::Unloaded => continue,
         };
         if block.is_opaque() == false {
             continue;
@@ -160,50 +162,98 @@ fn re_render_subchunk(
         let sy = y.rem_euclid(16);
         let sz = z.rem_euclid(16);
 
-        let above_block = chunk_collection.get_block((x, y + 1, z));
-        if let chunk::GetBlockOutput::Loaded(above_block) = above_block {
-            if above_block.is_opaque() == false {
-                buffer.push_face(render::TOP_FACE, (sx, sy, sz));
+        // Storage for the blocks nearby
+        let nearbys = NearbyBlocks::new((x, y, z), chunk_collection);
+        let opaque_count_of_face = |face: [Vertex; 4]| {
+            face.map(Vertex::pos_i64)
+                .map(|(vx, vy, vz)| nearbys.opaque_count((vx, vy, vz)))
+        };
+
+        if let MaybeLoadedBlock::Loaded(block) = nearbys.at((0, 1, 0)) {
+            if block.is_opaque() == false {
+                let opaque_counts = opaque_count_of_face(render::TOP_FACE);
+                buffer._push_face(render::TOP_FACE, opaque_counts, (sx, sy, sz));
             }
         }
 
-        let below_block = chunk_collection.get_block((x, y - 1, z));
-        if let chunk::GetBlockOutput::Loaded(below_block) = below_block {
+        if let MaybeLoadedBlock::Loaded(below_block) = nearbys.at((0, -1, 0)) {
             if below_block.is_opaque() == false {
-                buffer.push_face(render::BOTTOM_FACE, (sx, sy, sz));
+                let opaque_counts = opaque_count_of_face(render::BOTTOM_FACE);
+                buffer._push_face(render::BOTTOM_FACE, opaque_counts, (sx, sy, sz));
             }
         }
 
-        let right_block = chunk_collection.get_block((x + 1, y, z));
-        if let chunk::GetBlockOutput::Loaded(right_block) = right_block {
+        if let MaybeLoadedBlock::Loaded(right_block) = nearbys.at((1, 0, 0)) {
             if right_block.is_opaque() == false {
-                buffer.push_face(render::RIGHT_FACE, (sx, sy, sz));
+                let opaque_counts = opaque_count_of_face(render::RIGHT_FACE);
+                buffer._push_face(render::RIGHT_FACE, opaque_counts, (sx, sy, sz));
             }
         }
 
-        let left_block = chunk_collection.get_block((x - 1, y, z));
-        if let chunk::GetBlockOutput::Loaded(left_block) = left_block {
+        if let MaybeLoadedBlock::Loaded(left_block) = nearbys.at((-1, 0, 0)) {
             if left_block.is_opaque() == false {
-                buffer.push_face(render::LEFT_FACE, (sx, sy, sz));
+                let opaque_counts = opaque_count_of_face(render::LEFT_FACE);
+                buffer._push_face(render::LEFT_FACE, opaque_counts, (sx, sy, sz));
             }
         }
 
-        let front_block = chunk_collection.get_block((x, y, z + 1));
-        if let chunk::GetBlockOutput::Loaded(front_block) = front_block {
+        if let MaybeLoadedBlock::Loaded(front_block) = nearbys.at((0, 0, 1)) {
             if front_block.is_opaque() == false {
-                buffer.push_face(render::FRONT_FACE, (sx, sy, sz));
+                let opaque_counts = opaque_count_of_face(render::FRONT_FACE);
+                buffer._push_face(render::FRONT_FACE, opaque_counts, (sx, sy, sz));
             }
         }
 
-        let rear_block = chunk_collection.get_block((x, y, z - 1));
-        if let chunk::GetBlockOutput::Loaded(rear_block) = rear_block {
+        if let MaybeLoadedBlock::Loaded(rear_block) = nearbys.at((0, 0, -1)) {
             if rear_block.is_opaque() == false {
-                buffer.push_face(render::REAR_FACE, (sx, sy, sz));
+                let opaque_counts = opaque_count_of_face(render::REAR_FACE);
+                buffer._push_face(render::REAR_FACE, opaque_counts, (sx, sy, sz));
             }
         }
     }
 
     render.insert_rendered((cx, s as i64, cz), buffer);
+}
+
+/// Blocks within a 3x3x3 region around a center block.
+struct NearbyBlocks {
+    blocks: [[[MaybeLoadedBlock; 3]; 3]; 3],
+    opaques: [[[bool; 3]; 3]; 3],
+}
+
+impl NearbyBlocks {
+    fn new((x, y, z): (i64, i64, i64), chunk_collection: &chunk::ChunkCollection) -> Self {
+        let mut blocks = [[[MaybeLoadedBlock::Unloaded; 3]; 3]; 3];
+        for (dx, dy, dz) in iproduct!(-1..=1, -1..=1, -1..=1) {
+            blocks[(dx + 1) as usize][(dy + 1) as usize][(dz + 1) as usize] =
+                chunk_collection.get_block((x + dx, y + dy, z + dz));
+        }
+
+        let opaques = blocks.map(|b| {
+            b.map(|c| {
+                c.map(|block| match block {
+                    MaybeLoadedBlock::Loaded(block) => block.is_opaque(),
+                    MaybeLoadedBlock::Unloaded => false,
+                })
+            })
+        });
+        Self { blocks, opaques }
+    }
+
+    fn at(&self, (dx, dy, dz): (i64, i64, i64)) -> MaybeLoadedBlock {
+        self.blocks[(dx + 1) as usize][(dy + 1) as usize][(dz + 1) as usize]
+    }
+
+    /// Get the number of opaque blocks at the corner `(vx, vy, vz)`, specified in vertex
+    /// coordinates on the centeral unit block.
+    fn opaque_count(&self, (vx, vy, vz): (i64, i64, i64)) -> u8 {
+        // The filter (i.e. the unit block) is 2x2x2, while the input (i.e. the nearbys) is 3x3x3.
+        // This is like a 3d convolution with a 2x2x2 filter of all 1's.
+        iproduct!(vx..=(vx + 1), vy..=(vy + 1), vz..=(vz + 1))
+            .map(|(dx, dy, dz)| self.opaques[dx as usize][dy as usize][dz as usize])
+            .filter(|b| *b)
+            .count() as u8
+    }
 }
 
 #[derive(Debug)]

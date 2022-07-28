@@ -5,14 +5,16 @@ use itertools::Itertools;
 use noise::{NoiseFn, OpenSimplex};
 use tracing::info;
 
-use wgpu_block_shared::chunk::{Block, Chunk};
+pub use wgpu_block_shared::chunk::Block;
+use wgpu_block_shared::chunk::Chunk;
 
 /// A collection of chunks, indexed by their chunk coordinates `(cx, cz)`.
 pub struct ChunkCollection {
     chunks: HashMap<(i64, i64), ClientChunk>,
 }
 
-pub enum GetBlockOutput {
+#[derive(Clone, Copy)]
+pub enum MaybeLoadedBlock {
     Loaded(Block),
     Unloaded,
 }
@@ -75,9 +77,9 @@ impl ChunkCollection {
     ///
     /// For coordinates that are OOB above or below, the output is always [`Block::Empty`],
     /// despite the fact that we can't "load" a chunk that contains the block.
-    pub fn get_block(&self, (x, y, z): (i64, i64, i64)) -> GetBlockOutput {
+    pub fn get_block(&self, (x, y, z): (i64, i64, i64)) -> MaybeLoadedBlock {
         if (0..256).contains(&y) == false {
-            return GetBlockOutput::Loaded(Block::Empty);
+            return MaybeLoadedBlock::Loaded(Block::Empty);
         }
 
         let cx = x.div_euclid(16);
@@ -89,10 +91,10 @@ impl ChunkCollection {
 
         let chunk = match self.chunks.get(&(cx, cz)) {
             Some(chunk) => chunk,
-            None => return GetBlockOutput::Unloaded,
+            None => return MaybeLoadedBlock::Unloaded,
         };
 
-        GetBlockOutput::Loaded(chunk.get((lx, ly, lz)))
+        MaybeLoadedBlock::Loaded(chunk.get((lx, ly, lz)))
     }
 
     /// Get chunk coordinates of all the loaded chunks.
