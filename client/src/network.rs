@@ -83,7 +83,4 @@ pub enum Error {
 
     #[error(transparent)]
     Shared(#[from] wgpu_block_shared::Error),
-
-    #[error("unexpected end of messages")]
-    EndOfMessages,
 }

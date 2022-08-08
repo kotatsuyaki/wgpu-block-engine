@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
 use quinn::{ClientConfig, Endpoint, NewConnection};
-use serde::{Deserialize, Serialize};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::info;
 use wgpu_block_shared::protocol::Message;

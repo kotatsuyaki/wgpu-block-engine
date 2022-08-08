@@ -1,12 +1,9 @@
-use anyhow::{Context, Result};
-use futures::{SinkExt, StreamExt};
+use anyhow::Result;
 use hashbrown::HashMap;
-use quinn::{Endpoint, Incoming, NewConnection, ServerConfig};
 use serde::{Deserialize, Serialize};
 use spin_sleep::LoopHelper;
-use tokio::{runtime, select, signal::ctrl_c, spawn};
-use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
-use tracing::{info, warn};
+use tokio::runtime;
+use tracing::info;
 use wgpu_block_shared::chunk::Chunk;
 
 mod network;
@@ -15,7 +12,7 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
     let _chunk_collection = ChunkCollection::new();
 
-    let mut loop_helper = LoopHelper::builder()
+    let mut _loop_helper = LoopHelper::builder()
         .report_interval_s(0.5)
         .build_with_target_rate(20.0);
 
