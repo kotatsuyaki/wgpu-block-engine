@@ -13,6 +13,7 @@ use winit::{
 use crate::{chunk::MaybeLoadedBlock, render::Vertex};
 
 mod chunk;
+mod network;
 mod render;
 
 fn main() -> Result<()> {
@@ -23,7 +24,12 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
+    // start network task
+    let network_task = runtime.spawn(network::run());
+    // start main loop
     run(runtime.handle().clone());
+
+    runtime.block_on(network_task)??;
 
     Ok(())
 }

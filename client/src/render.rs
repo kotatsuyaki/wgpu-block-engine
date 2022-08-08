@@ -49,6 +49,10 @@ pub struct Render {
 }
 
 impl Render {
+    // Create a new [`Render`].
+    //
+    // This constructor is async because for some reason, creating [`Adaptor`]s, [`Device`]s, and
+    // [`Queue`]s in [`winit`] requires calling some async functions.
     pub async fn new(window: &Window) -> Self {
         let inst = wgpu::Instance::new(Backends::all());
         let surface = unsafe { inst.create_surface(window) };

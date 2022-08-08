@@ -1159,6 +1159,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "wgpu-block-shared",
 ]
 
 [[package]]
@@ -2104,6 +2105,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "serde",
+ "thiserror",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -2143,7 +2145,14 @@ dependencies = [
 name = "wgpu-block-shared"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "bytemuck",
+ "bytes",
  "noise",
+ "quinn",
+ "serde",
+ "thiserror",
+ "tokio-util",
  "tracing",
 ]
 
