@@ -6,7 +6,7 @@ use thiserror::Error;
 
 use tokio_stream::StreamExt;
 use tracing::info;
-use wgpu_block_shared::protocol::{self, Message};
+use wgpu_block_shared::protocol::{self, ClientMessage, ServerMessage};
 
 pub async fn run() -> Result<(), Error> {
     let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
@@ -21,13 +21,13 @@ pub async fn run() -> Result<(), Error> {
     let (tx, rx) = conn.open_bi().await?;
     let (mut tx, mut rx) = protocol::make_framed(tx, rx);
 
-    let ping_msg = Message::Ping;
+    let ping_msg = ClientMessage::Ping;
     tx.send(ping_msg.serialize()?.into()).await?;
 
-    while let Some(msg) = rx.next().await {
-        let msg = msg?;
-        let msg = Message::deserialize(msg)?;
-        info!("Got message from server: {msg:?}");
+    while let Some(server_msg) = rx.next().await {
+        let server_msg = server_msg?;
+        let server_msg = ServerMessage::deserialize(server_msg)?;
+        info!("Got message from server: {server_msg:?}");
     }
 
     info!("Server closed bidirectional stream");

@@ -5,17 +5,32 @@ use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum Message {
+pub enum ClientMessage {
     Ping,
-    Pong { data: i64 },
 }
 
-impl Message {
+impl ClientMessage {
     pub fn serialize(&self) -> Result<Vec<u8>, Error> {
         Ok(bincode::serialize(self)?)
     }
 
-    pub fn deserialize<'a, T: AsRef<[u8]>>(bytes: T) -> Result<Self, Error> {
+    pub fn deserialize<T: AsRef<[u8]>>(bytes: T) -> Result<Self, Error> {
+        Ok(bincode::deserialize(bytes.as_ref().into())?)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ServerMessage {
+    Pong { data: i64 },
+}
+
+impl ServerMessage {
+    pub fn serialize(&self) -> Result<Vec<u8>, Error> {
+        Ok(bincode::serialize(self)?)
+    }
+
+    pub fn deserialize<T: AsRef<[u8]>>(bytes: T) -> Result<Self, Error> {
         Ok(bincode::deserialize(bytes.as_ref().into())?)
     }
 }

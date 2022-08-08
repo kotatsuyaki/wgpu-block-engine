@@ -4,7 +4,7 @@ use quinn::{Endpoint, NewConnection, ServerConfig};
 use tokio::{select, signal::ctrl_c, spawn};
 use tracing::{info, trace, warn};
 
-use wgpu_block_shared::protocol::{self, Message};
+use wgpu_block_shared::protocol::{self, ClientMessage, ServerMessage};
 
 pub async fn run() {
     let (cert, key) = generate_self_signed_cert().expect("Failed to generate self-signed cert");
@@ -58,14 +58,14 @@ async fn handle_client_newconn(mut newconn: NewConnection) -> Result<()> {
         .context("Connection error")?;
     let (mut tx, mut rx) = protocol::make_framed(tx, rx);
 
-    while let Some(msg_raw) = rx.next().await {
-        let msg_raw = msg_raw?;
-        let msg = Message::deserialize(msg_raw)?;
-        match msg {
-            Message::Ping => {
+    while let Some(client_msg) = rx.next().await {
+        let client_msg = client_msg?;
+        let client_msg = ClientMessage::deserialize(client_msg)?;
+        match client_msg {
+            ClientMessage::Ping => {
                 // respond with pong
-                let pong = Message::Pong { data: 42 };
-                let pong_raw = bincode::serialize(&pong)?;
+                let pong = ServerMessage::Pong { data: 42 };
+                let pong_raw = pong.serialize()?;
                 tx.send(pong_raw.into()).await?;
 
                 // terminate connection

@@ -5,7 +5,7 @@ use futures::{SinkExt, StreamExt};
 use quinn::{ClientConfig, Endpoint, NewConnection};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 use tracing::info;
-use wgpu_block_shared::protocol::Message;
+use wgpu_block_shared::protocol::ClientMessage;
 
 fn main() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -36,13 +36,13 @@ async fn client(client_config: ClientConfig) -> Result<()> {
     let mut rx = FramedRead::new(rx, LengthDelimitedCodec::new());
     info!("Opened bidir");
 
-    let msg = Message::Ping;
+    let msg = ClientMessage::Ping;
     let msg = bincode::serialize(&msg)?;
     tx.send(msg.into()).await?;
     info!("Sent message");
 
     let resp_msg = rx.next().await.context("rx.next() failed")??;
-    let resp_msg: Message = bincode::deserialize(&resp_msg)?;
+    let resp_msg: ClientMessage = bincode::deserialize(&resp_msg)?;
     info!("Received pong: {:?}", resp_msg);
 
     Ok(())
