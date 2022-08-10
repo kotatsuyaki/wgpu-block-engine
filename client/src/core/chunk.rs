@@ -1,7 +1,7 @@
 //! Primitives related to chunks and blocks.
 
 use hashbrown::HashMap;
-use itertools::Itertools;
+use itertools::{iproduct, Itertools};
 use noise::{NoiseFn, OpenSimplex};
 use tracing::info;
 
@@ -34,6 +34,13 @@ impl ChunkCollection {
                 dirty: [true; 16],
             },
         );
+
+        // Mark neighboring chunks as dirty
+        for (dx, dz) in iproduct!(-1..=1, -1..=1).filter(|&(dx, dz)| (dx, dz) != (0, 0)) {
+            if let Some(chunk) = self.chunks.get_mut(&(cx + dx, cz + dz)) {
+                chunk.dirty = [true; 16];
+            }
+        }
     }
 
     pub fn unload_chunk(&mut self, (cx, cz): (i64, i64)) {
