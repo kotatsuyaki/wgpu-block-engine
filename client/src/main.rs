@@ -36,7 +36,8 @@ fn init_tracing() {
     fmt()
         .compact()
         .with_line_number(true)
-        .with_target(true)
+        .with_file(true)
+        .with_target(false)
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
             let pkg_name = PKG_NAME.replace("-", "_");
             EnvFilter::from_str(&format!("warn,{pkg_name}=info"))
