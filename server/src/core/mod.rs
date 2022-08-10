@@ -57,7 +57,9 @@ pub fn run((mut out_tx, in_rx): (AsyncSender<OutboundMessage>, SyncReceiver<Inbo
                 .cloned()
                 .collect_vec();
 
-            info!("Sending new chunks at {new_chunks:?} to client {uuid}");
+            if new_chunks.is_empty() == false {
+                info!("Sending new chunks at {new_chunks:?} to client {uuid}");
+            }
 
             for &(cx, cz) in new_chunks.iter() {
                 let chunk = chunk_collection.get((cx, cz)).expect("Failed to get chunk");
