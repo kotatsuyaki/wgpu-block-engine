@@ -37,6 +37,7 @@ pub fn run(
     let mut is_cursor_grabbed = false;
 
     use WindowEvent::*;
+    let mut frame = 0;
     event_loop.run(move |event, _, control_flow| match event {
         Event::WindowEvent { event, .. } => match event {
             CloseRequested => *control_flow = ControlFlow::Exit,
@@ -72,6 +73,8 @@ pub fn run(
             _ => {}
         },
         Event::MainEventsCleared => {
+            frame += 1;
+
             // consume [`ServerMessage`]s
             for server_msg in in_rx.try_iter() {
                 use ServerMessage::*;
@@ -101,13 +104,15 @@ pub fn run(
             }
 
             // tell the server my position
-            out_tx
-                .send(ClientMessage::SetPlayerPos {
-                    eye: (spec.eye.x, spec.eye.y, spec.eye.z),
-                    pitch: spec.pitch,
-                    yaw: spec.yaw,
-                })
-                .expect("Failed to send message to out_tx");
+            if frame % 60 == 0 {
+                out_tx
+                    .send(ClientMessage::SetPlayerPos {
+                        eye: (spec.eye.x, spec.eye.y, spec.eye.z),
+                        pitch: spec.pitch,
+                        yaw: spec.yaw,
+                    })
+                    .expect("Failed to send message to out_tx");
+            }
 
             // re-render dirty subchunks
             re_render_chunks(&mut chunk_collection, &mut render);
