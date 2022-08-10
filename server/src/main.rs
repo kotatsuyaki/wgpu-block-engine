@@ -1,48 +1,35 @@
 use anyhow::Result;
-use hashbrown::HashMap;
-use serde::{Deserialize, Serialize};
-use spin_sleep::LoopHelper;
-use tokio::runtime;
+use tokio::{runtime, sync::mpsc};
 use tracing::info;
-use wgpu_block_shared::chunk::Chunk;
 
+mod core;
 mod network;
 
-fn main() -> Result<()> {
-    tracing_subscriber::fmt().init();
-    let _chunk_collection = ChunkCollection::new();
+type SyncSender<T> = crossbeam_channel::Sender<T>;
+type SyncReceiver<T> = crossbeam_channel::Receiver<T>;
+type AsyncSender<T> = tokio::sync::mpsc::UnboundedSender<T>;
+type AsyncReceiver<T> = tokio::sync::mpsc::UnboundedReceiver<T>;
 
-    let mut _loop_helper = LoopHelper::builder()
-        .report_interval_s(0.5)
-        .build_with_target_rate(20.0);
+fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .compact()
+        .with_line_number(true)
+        .with_file(true)
+        .with_target(false)
+        .init();
 
     let runtime = runtime::Builder::new_multi_thread().enable_all().build()?;
-    let network_task = runtime.spawn(network::run());
+
+    // channel for **incoming** messages from the clients
+    let (in_tx, in_rx) = crossbeam_channel::unbounded();
+    // channel for **outgoing** messages to be sent to the clients
+    let (out_tx, out_rx) = mpsc::unbounded_channel();
+
+    let network_task = runtime.spawn(network::run((in_tx, out_rx)));
+    core::run((out_tx, in_rx));
 
     runtime.block_on(network_task)?;
     info!("Exiting");
 
     Ok(())
 }
-
-#[derive(Debug, Serialize, Deserialize)]
-enum Message {
-    Ping { data: i64 },
-    Pong { data: i64 },
-}
-
-#[allow(dead_code)]
-pub struct ChunkCollection {
-    chunks: HashMap<(i64, i64), Chunk>,
-}
-
-impl ChunkCollection {
-    fn new() -> Self {
-        Self {
-            chunks: HashMap::new(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod test {}

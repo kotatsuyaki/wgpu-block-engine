@@ -18,8 +18,11 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 anyhow = "1.0"
+thiserror = "1.0"
 itertools = "0.10"
 hashbrown = "0.12"
+crossbeam-channel = "0.5"
+uuid = { version = "1.1", features = ["v4", "serde"] }
 
 # Math
 glam = { version = "0.21", features = ["bytemuck"] }

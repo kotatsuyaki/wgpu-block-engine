@@ -750,7 +750,7 @@ pub fn shift_indices(base_indices: [u16; 6], start_index: u16) -> [u16; 6] {
 }
 
 mod assets {
-    pub const GRASSTOP: &[u8] = include_bytes!("../assets/grass-top.png");
+    pub const GRASSTOP: &[u8] = include_bytes!("../../assets/grass-top.png");
 }
 
 trait AsU8Slice<'a> {

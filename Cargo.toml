@@ -4,3 +4,8 @@ members = ["client", "server", "shared", "playground"]
 
 [profile.release]
 debug = 1
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+panic = "abort"
