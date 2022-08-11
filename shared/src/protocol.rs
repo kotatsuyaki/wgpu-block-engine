@@ -31,9 +31,7 @@ pub enum ClientMessage {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[non_exhaustive]
 pub enum ServerMessage {
-    Pong {
-        data: i64,
-    },
+    Pong,
     LoadChunk {
         cx: i64,
         cz: i64,

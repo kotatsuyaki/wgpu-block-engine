@@ -1,4 +1,4 @@
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::atomic::AtomicBool;
 
 use glam::Vec3;
 use hashbrown::{HashMap, HashSet};
@@ -29,6 +29,7 @@ pub fn run(
     let mut loop_helper = LoopHelper::builder()
         .report_interval_s(2.0)
         .build_with_target_rate(20.0);
+    let mut tick = 0;
 
     loop {
         if should_stop.load(std::sync::atomic::Ordering::SeqCst) {
@@ -53,6 +54,17 @@ pub fn run(
         }
 
         // TODO: tick game
+
+        // pong all clients
+        if tick % 20 == 0 {
+            let server_msg = ServerMessage::Pong;
+            out_tx
+                .send(OutboundMessage {
+                    dest: OutboundDestination::Broadcast,
+                    server_msg,
+                })
+                .expect("Sending to out_tx failed");
+        }
 
         // send newly-entered chunks to the clients
         let server_chunks: HashSet<(i64, i64)> = chunk_collection.chunks.keys().cloned().collect();
@@ -95,6 +107,7 @@ pub fn run(
         }
 
         loop_helper.loop_sleep();
+        tick += 1;
     }
 }
 

@@ -1,4 +1,4 @@
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
@@ -18,9 +18,6 @@ use crate::{AsyncReceiver, AsyncSender, SyncSender};
 
 type ClientTx = AsyncSender<ServerMessage>;
 type Shared<T> = Arc<RwLock<T>>;
-fn make_shared<T>(t: T) -> Shared<T> {
-    Arc::new(RwLock::new(t))
-}
 
 /// Wrapper around [`ServerMessage`] that includes the destination information.
 #[derive(Debug)]
@@ -60,8 +57,12 @@ pub async fn run((in_tx, out_rx): (SyncSender<InboundMessage>, AsyncReceiver<Out
 
     let clients = NetworkClients::new();
 
-    let _handle_incomings_task = spawn(handle_incomings(incoming, in_tx, clients.clone()));
-    let outbound_forward_task = spawn(forward_outbound_messages(out_rx, clients.clone()));
+    let _handle_incomings_task = spawn(handle_incomings(incoming, in_tx.clone(), clients.clone()));
+    let outbound_forward_task = spawn(forward_outbound_messages(
+        in_tx.clone(),
+        out_rx,
+        clients.clone(),
+    ));
 
     info!("Awaiting outbound forwarder task");
     outbound_forward_task.await.unwrap();
@@ -112,6 +113,7 @@ async fn handle_incomings(
 }
 
 async fn forward_outbound_messages(
+    in_tx: SyncSender<InboundMessage>,
     mut out_rx: AsyncReceiver<OutboundMessage>,
     connections: Shared<NetworkClients>,
 ) {
@@ -141,7 +143,11 @@ async fn forward_outbound_messages(
                     warn!(?e);
 
                     let mut connections = connections.write().await;
-                    connections.remove_client(uuid);
+                    connections.remove_client(uuid).await;
+                    if let Err(e) = in_tx.send(InboundMessage::RemoveClient { uuid }) {
+                        warn!(?e);
+                        break;
+                    }
                 }
             }
             OutboundDestination::Broadcast => {
@@ -184,6 +190,7 @@ impl NetworkClients {
     async fn remove_client(&mut self, uuid: Uuid) {
         let client = self.clients.remove(&uuid);
         if client.is_none() {
+            warn!("Attempted to remove an already-removed network client");
             return;
         }
         client.unwrap().close().await;
@@ -209,7 +216,6 @@ struct NetworkClient {
     connection: Connection,
     // must be awaited to ensure that clients are notified of the disconnection
     sender_task: JoinHandle<Result<()>>,
-    receiver_task: JoinHandle<Result<()>>,
 }
 
 impl NetworkClient {
@@ -218,12 +224,13 @@ impl NetworkClient {
             client_tx,
             connection,
             sender_task,
-            receiver_task: _,
         } = self;
         // drop sender
         drop(client_tx);
         // wait for the sender task to send out the final `ServerMessage::Disconnect`
-        sender_task.await;
+        if let Err(e) = sender_task.await {
+            warn!(?e);
+        }
         // close the rx
         connection.close(VarInt::from_u32(1), b"Server shutdown");
     }
@@ -251,13 +258,13 @@ async fn start_client_communicator(
 
     let connection = newconn.connection.clone();
     let sender_task = spawn(start_client_communicator_sender(uuid, tx, client_rx));
-    let receiver_task = spawn(start_client_communicator_receiver(uuid, rx, in_tx));
+    // dangling receivers returns once the client connections are closed
+    let _receiver_task = spawn(start_client_communicator_receiver(uuid, rx, in_tx));
 
     NetworkClient {
         client_tx,
         connection,
         sender_task,
-        receiver_task,
     }
 }
 

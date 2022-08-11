@@ -82,9 +82,6 @@ pub fn run(
                     SetClientInfo { uuid } => {
                         info!("Login success with client uuid {uuid}");
                     }
-                    Pong { data } => {
-                        info!("Received pong from server: {data}");
-                    }
                     LoadChunk { cx, cz, chunk } => {
                         chunk_collection.load_chunk((cx, cz), chunk);
                         info!("Loaded chunk at ({cx}, {cz})");

@@ -2,8 +2,6 @@
 
 use hashbrown::HashMap;
 use itertools::{iproduct, Itertools};
-use noise::{NoiseFn, OpenSimplex};
-use tracing::info;
 
 pub use wgpu_block_shared::chunk::BlockId;
 use wgpu_block_shared::chunk::Chunk;
