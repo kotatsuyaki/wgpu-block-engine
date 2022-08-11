@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
-use quinn::{Connection, Endpoint, NewConnection, ServerConfig, VarInt};
+use quinn::{Connection, Endpoint, Incoming, NewConnection, ServerConfig, VarInt};
 use tokio::{
     spawn,
     sync::{mpsc, RwLock},
@@ -55,14 +55,25 @@ pub async fn run((in_tx, out_rx): (SyncSender<InboundMessage>, AsyncReceiver<Out
     let (cert, key) = generate_self_signed_cert().expect("Failed to generate self-signed cert");
     let server_config =
         ServerConfig::with_single_cert(vec![cert], key).expect("Failed to create server config");
-    let (_endpoint, mut incoming) =
-        Endpoint::server(server_config, "127.0.0.1:5000".parse().unwrap())
-            .expect("Failed to construct server");
+    let (_endpoint, incoming) = Endpoint::server(server_config, "127.0.0.1:5000".parse().unwrap())
+        .expect("Failed to construct server");
 
     let clients = NetworkClients::new();
 
+    let _handle_incomings_task = spawn(handle_incomings(incoming, in_tx, clients.clone()));
     let outbound_forward_task = spawn(forward_outbound_messages(out_rx, clients.clone()));
 
+    info!("Awaiting outbound forwarder task");
+    outbound_forward_task.await.unwrap();
+
+    info!("Network module shutdown");
+}
+
+async fn handle_incomings(
+    mut incoming: Incoming,
+    in_tx: SyncSender<InboundMessage>,
+    clients: Shared<NetworkClients>,
+) {
     while let Some(connecting) = incoming.next().await {
         let mut newconn = match connecting.await {
             Ok(newconn) => newconn,
@@ -98,8 +109,6 @@ pub async fn run((in_tx, out_rx): (SyncSender<InboundMessage>, AsyncReceiver<Out
         .await;
         clients.write().await.insert_client(uuid, client_connection);
     }
-
-    outbound_forward_task.await.unwrap();
 }
 
 async fn forward_outbound_messages(
@@ -147,8 +156,10 @@ async fn forward_outbound_messages(
     }
 
     // Properly shutdown all client connections
+    info!("Shutting down client connections");
     let mut connections = connections.write().await;
     connections.close_all().await;
+    info!("Shutted down all client connections");
 }
 
 struct NetworkClients {

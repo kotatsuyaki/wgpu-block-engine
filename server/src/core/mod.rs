@@ -1,3 +1,5 @@
+use std::sync::{atomic::AtomicBool, Arc};
+
 use glam::Vec3;
 use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
@@ -17,7 +19,10 @@ use crate::{
     AsyncSender, SyncReceiver,
 };
 
-pub fn run((mut out_tx, in_rx): (AsyncSender<OutboundMessage>, SyncReceiver<InboundMessage>)) {
+pub fn run(
+    (mut out_tx, in_rx): (AsyncSender<OutboundMessage>, SyncReceiver<InboundMessage>),
+    should_stop: &AtomicBool,
+) {
     let mut chunk_collection = ChunkCollection::new();
     let mut clients = Clients::new();
 
@@ -26,6 +31,11 @@ pub fn run((mut out_tx, in_rx): (AsyncSender<OutboundMessage>, SyncReceiver<Inbo
         .build_with_target_rate(20.0);
 
     loop {
+        if should_stop.load(std::sync::atomic::Ordering::SeqCst) {
+            info!("Breaking game loop");
+            break;
+        }
+
         let _delta = loop_helper.loop_start();
 
         // process inbound messages

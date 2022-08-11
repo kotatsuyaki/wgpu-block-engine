@@ -1,5 +1,11 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
 use anyhow::Result;
-use tokio::{runtime, sync::mpsc};
+use futures::FutureExt;
+use tokio::{runtime, signal::ctrl_c, sync::mpsc};
 use tracing::info;
 
 mod core;
@@ -20,13 +26,22 @@ fn main() -> Result<()> {
 
     let runtime = runtime::Builder::new_multi_thread().enable_all().build()?;
 
+    let should_stop = Arc::new(AtomicBool::new(false));
+    {
+        let should_stop = should_stop.clone();
+        runtime.spawn(ctrl_c().then(|_| async move {
+            info!("Received shutdown signal");
+            should_stop.store(true, Ordering::SeqCst);
+        }));
+    }
+
     // channel for **incoming** messages from the clients
     let (in_tx, in_rx) = crossbeam_channel::unbounded();
     // channel for **outgoing** messages to be sent to the clients
     let (out_tx, out_rx) = mpsc::unbounded_channel();
 
     let network_task = runtime.spawn(network::run((in_tx, out_rx)));
-    core::run((out_tx, in_rx));
+    core::run((out_tx, in_rx), &should_stop);
 
     runtime.block_on(network_task)?;
     info!("Exiting");
