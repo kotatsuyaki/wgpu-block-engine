@@ -148,7 +148,7 @@ impl Render {
                 module: &shader,
                 entry_point: "main_vs",
                 buffers: &[VertexBufferLayout {
-                    step_mode: wgpu::VertexStepMode::Vertex,
+                    step_mode: VertexStepMode::Vertex,
                     attributes: &vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32],
                     array_stride: size_of::<Vertex>() as BufferAddress,
                 }],
