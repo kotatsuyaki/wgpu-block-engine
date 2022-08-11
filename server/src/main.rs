@@ -5,8 +5,10 @@ use std::sync::{
 
 use anyhow::Result;
 use futures::FutureExt;
+use time::macros::format_description;
 use tokio::{runtime, signal::ctrl_c, sync::mpsc};
 use tracing::info;
+use tracing_subscriber::fmt::time::UtcTime;
 
 mod core;
 mod network;
@@ -22,6 +24,9 @@ fn main() -> Result<()> {
         .with_line_number(true)
         .with_file(true)
         .with_target(false)
+        .with_timer(UtcTime::new(format_description!(
+            "[hour]:[minute]:[second].[subsecond digits:6]"
+        )))
         .init();
 
     let runtime = runtime::Builder::new_multi_thread().enable_all().build()?;

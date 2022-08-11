@@ -103,7 +103,7 @@ pub fn run(
         // TODO: tell clients to unload faraway chunks
 
         if let Some(tps) = loop_helper.report_rate() {
-            info!("TPS = {tps}");
+            info!("TPS = {tps:.2}; {tick}");
         }
 
         loop_helper.loop_sleep();
