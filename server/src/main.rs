@@ -4,13 +4,13 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use futures::FutureExt;
 use time::macros::format_description;
-use tokio::{runtime, signal::ctrl_c, sync::mpsc};
-use tracing::info;
+use tokio::{runtime, signal::ctrl_c, spawn};
+use tracing::{info, warn};
 use tracing_subscriber::fmt::time::UtcTime;
 
 mod core;
+mod frontend;
 mod network;
 
 type SyncSender<T> = crossbeam_channel::Sender<T>;
@@ -30,26 +30,24 @@ fn main() -> Result<()> {
         .init();
 
     let runtime = runtime::Builder::new_multi_thread().enable_all().build()?;
+    let _enter_guard = runtime.enter();
 
     let should_stop = Arc::new(AtomicBool::new(false));
-    {
-        let should_stop = should_stop.clone();
-        runtime.spawn(ctrl_c().then(|_| async move {
-            info!("Received shutdown signal");
-            should_stop.store(true, Ordering::SeqCst);
-        }));
-    }
+    spawn(listen_ctrl_c(should_stop.clone()));
 
-    // channel for **incoming** messages from the clients
-    let (in_tx, in_rx) = crossbeam_channel::unbounded();
-    // channel for **outgoing** messages to be sent to the clients
-    let (out_tx, out_rx) = mpsc::unbounded_channel();
+    let network_system = network::NetworkSystem::new();
+    core::run(network_system.handle(), &should_stop);
+    runtime.block_on(network_system.shutdown());
 
-    let network_task = runtime.spawn(network::run((in_tx, out_rx)));
-    core::run((out_tx, in_rx), &should_stop);
-
-    runtime.block_on(network_task)?;
     info!("Exiting");
 
     Ok(())
+}
+
+async fn listen_ctrl_c(should_stop: Arc<AtomicBool>) {
+    if let Err(e) = ctrl_c().await {
+        warn!(?e);
+    }
+    info!("Received shutdown signal");
+    should_stop.store(true, Ordering::SeqCst);
 }

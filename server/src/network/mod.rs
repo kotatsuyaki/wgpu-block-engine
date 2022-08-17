@@ -4,73 +4,123 @@ use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
 use hashbrown::HashMap;
 use quinn::{Connection, Endpoint, Incoming, NewConnection, ServerConfig, VarInt};
-use tokio::{
-    spawn,
-    sync::{mpsc, RwLock},
-    task::JoinHandle,
-};
+use tokio::sync::{mpsc, RwLock};
+use tokio::task::{spawn, JoinHandle};
 use tracing::{info, warn};
-
 use uuid::Uuid;
-use wgpu_block_shared::protocol::{self, ClientMessage, Rx, ServerMessage, Tx};
 
-use crate::{AsyncReceiver, AsyncSender, SyncSender};
+use crate::frontend::{Frontend, InboundMessage};
+use crate::{AsyncReceiver, AsyncSender, SyncReceiver, SyncSender};
+use wgpu_block_shared::protocol;
+use wgpu_block_shared::protocol::{ClientMessage, Rx, ServerMessage, Tx};
 
 type ClientTx = AsyncSender<ServerMessage>;
 type Shared<T> = Arc<RwLock<T>>;
 
+#[derive(Clone)]
+pub struct NetworkHandle {
+    out_tx: AsyncSender<OutboundMessage>,
+    in_rx: Arc<SyncReceiver<InboundMessage>>,
+}
+
+impl Frontend for NetworkHandle {
+    fn iter_messages(&self) -> Box<dyn Iterator<Item = InboundMessage> + '_> {
+        Box::new(self.in_rx.try_iter())
+    }
+
+    fn broadcast(&self, server_msg: ServerMessage) {
+        self.out_tx
+            .send(OutboundMessage {
+                dest: OutboundMessageDestination::Broadcast,
+                server_msg,
+            })
+            .expect("Failed to send outbound message to out_tx");
+    }
+
+    fn send(&self, uuid: Uuid, server_msg: ServerMessage) {
+        self.out_tx
+            .send(OutboundMessage {
+                dest: OutboundMessageDestination::Client(uuid),
+                server_msg,
+            })
+            .expect("Failed to send outbound message to out_tx");
+    }
+}
+
 /// Wrapper around [`ServerMessage`] that includes the destination information.
 #[derive(Debug)]
 pub struct OutboundMessage {
-    pub dest: OutboundDestination,
+    pub dest: OutboundMessageDestination,
     pub server_msg: ServerMessage,
 }
 
 #[derive(Debug)]
-pub enum OutboundDestination {
+pub enum OutboundMessageDestination {
     /// The message is to be sent to a particular client identified by an [`Uuid`].
     Client(Uuid),
     /// The message is to be sent to all connected clients.
     Broadcast,
 }
 
-/// Wrapper around [`ClientMessage`] that includes the one-time client uuid.
-pub enum InboundMessage {
-    Message {
-        uuid: Uuid,
-        client_msg: ClientMessage,
-    },
-    AddClient {
-        uuid: Uuid,
-    },
-    RemoveClient {
-        uuid: Uuid,
-    },
+#[must_use]
+pub struct NetworkSystem {
+    forward_outbound_handle: JoinHandle<()>,
+    out_tx: AsyncSender<OutboundMessage>,
+    in_rx: Arc<SyncReceiver<InboundMessage>>,
 }
 
-pub async fn run((in_tx, out_rx): (SyncSender<InboundMessage>, AsyncReceiver<OutboundMessage>)) {
+impl NetworkSystem {
+    pub fn new() -> Self {
+        let (in_tx, in_rx) = crossbeam_channel::unbounded();
+        let (out_tx, out_rx) = mpsc::unbounded_channel();
+        let (_endpoint, incoming) = create_endpoint();
+        let clients = NetworkClients::new();
+
+        let _dispatch_incomings_handle =
+            spawn(dispatch_incomings(incoming, in_tx.clone(), clients.clone()));
+        let forward_outbound_handle = spawn(forward_outbound_messages(
+            in_tx.clone(),
+            out_rx, // moved
+            clients.clone(),
+        ));
+
+        Self {
+            forward_outbound_handle,
+            out_tx,
+            in_rx: Arc::new(in_rx),
+        }
+    }
+
+    pub fn handle(&self) -> NetworkHandle {
+        NetworkHandle {
+            out_tx: self.out_tx.clone(),
+            in_rx: self.in_rx.clone(),
+        }
+    }
+
+    pub async fn shutdown(self) {
+        let Self {
+            forward_outbound_handle,
+            out_tx,
+            in_rx,
+        } = self;
+        drop(out_tx);
+        drop(in_rx);
+        forward_outbound_handle.await.expect("Failed to join");
+    }
+}
+
+/// # Panics
+fn create_endpoint() -> (Endpoint, Incoming) {
     let (cert, key) = generate_self_signed_cert().expect("Failed to generate self-signed cert");
     let server_config =
         ServerConfig::with_single_cert(vec![cert], key).expect("Failed to create server config");
-    let (_endpoint, incoming) = Endpoint::server(server_config, "127.0.0.1:5000".parse().unwrap())
+    let (endpoint, incoming) = Endpoint::server(server_config, "127.0.0.1:5000".parse().unwrap())
         .expect("Failed to construct server");
-
-    let clients = NetworkClients::new();
-
-    let _handle_incomings_task = spawn(handle_incomings(incoming, in_tx.clone(), clients.clone()));
-    let outbound_forward_task = spawn(forward_outbound_messages(
-        in_tx.clone(),
-        out_rx,
-        clients.clone(),
-    ));
-
-    info!("Awaiting outbound forwarder task");
-    outbound_forward_task.await.unwrap();
-
-    info!("Network module shutdown");
+    (endpoint, incoming)
 }
 
-async fn handle_incomings(
+async fn dispatch_incomings(
     mut incoming: Incoming,
     in_tx: SyncSender<InboundMessage>,
     clients: Shared<NetworkClients>,
@@ -123,7 +173,7 @@ async fn forward_outbound_messages(
     while let Some(out_msg) = out_rx.recv().await {
         let OutboundMessage { dest, server_msg } = out_msg;
         match dest {
-            OutboundDestination::Client(uuid) => {
+            OutboundMessageDestination::Client(uuid) => {
                 // get the client tx and send
                 let res = {
                     let connections = connections.read().await;
@@ -150,7 +200,7 @@ async fn forward_outbound_messages(
                     }
                 }
             }
-            OutboundDestination::Broadcast => {
+            OutboundMessageDestination::Broadcast => {
                 let client_txs = connections.read().await;
                 for client_tx in client_txs.iter_client_txs() {
                     if let Err(e) = client_tx.send(server_msg.clone()) {

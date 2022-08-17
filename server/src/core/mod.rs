@@ -14,15 +14,9 @@ use wgpu_block_shared::{
     protocol::{ClientMessage, ServerMessage},
 };
 
-use crate::{
-    network::{InboundMessage, OutboundDestination, OutboundMessage},
-    AsyncSender, SyncReceiver,
-};
+use crate::frontend::{Frontend, InboundMessage};
 
-pub fn run(
-    (mut out_tx, in_rx): (AsyncSender<OutboundMessage>, SyncReceiver<InboundMessage>),
-    should_stop: &AtomicBool,
-) {
+pub fn run(frontend: impl Frontend, should_stop: &AtomicBool) {
     let mut chunk_collection = ChunkCollection::new();
     let mut clients = Clients::new();
 
@@ -40,12 +34,12 @@ pub fn run(
         let _delta = loop_helper.loop_start();
 
         // process inbound messages
-        for in_msg in in_rx.try_iter() {
+        for in_msg in frontend.iter_messages() {
             if let Err(e) = handle_inbound_message(
                 InboundHandlerContext {
                     clients: &mut clients,
                     chunks: &mut chunk_collection,
-                    out_tx: &mut out_tx,
+                    frontend: frontend.clone(),
                 },
                 in_msg,
             ) {
@@ -58,12 +52,7 @@ pub fn run(
         // pong all clients
         if tick % 20 == 0 {
             let server_msg = ServerMessage::Pong;
-            out_tx
-                .send(OutboundMessage {
-                    dest: OutboundDestination::Broadcast,
-                    server_msg,
-                })
-                .expect("Sending to out_tx failed");
+            frontend.broadcast(server_msg);
         }
 
         // send newly-entered chunks to the clients
@@ -90,12 +79,7 @@ pub fn run(
                     cz,
                     chunk: chunk.clone(),
                 };
-                out_tx
-                    .send(OutboundMessage {
-                        dest: OutboundDestination::Client(uuid),
-                        server_msg,
-                    })
-                    .expect("Sending to out_tx failed");
+                frontend.send(uuid, server_msg);
             }
             client.loaded_chunks.extend(new_chunks);
         }
@@ -111,14 +95,15 @@ pub fn run(
     }
 }
 
-struct InboundHandlerContext<'cl, 'ch, 'tx> {
+struct InboundHandlerContext<'cl, 'ch, F: Frontend> {
     clients: &'cl mut Clients,
+    #[allow(dead_code)]
     chunks: &'ch mut ChunkCollection,
-    out_tx: &'tx mut AsyncSender<OutboundMessage>,
+    frontend: F,
 }
 
-fn handle_inbound_message(
-    ctx: InboundHandlerContext,
+fn handle_inbound_message<F: Frontend>(
+    ctx: InboundHandlerContext<F>,
     in_msg: InboundMessage,
 ) -> Result<(), HandleInboundMessageError> {
     let (uuid, client_msg) = match in_msg {
@@ -133,12 +118,7 @@ fn handle_inbound_message(
             client.logined = true;
 
             let server_msg = ServerMessage::SetClientInfo { uuid };
-            ctx.out_tx
-                .send(OutboundMessage {
-                    dest: OutboundDestination::Client(uuid),
-                    server_msg,
-                })
-                .expect("Sending to out_tx failed");
+            ctx.frontend.send(uuid, server_msg);
         }
         ClientMessage::SetPlayerPos { eye, pitch, yaw } => {
             let client = ctx.clients.get_client_mut(uuid)?;
@@ -208,6 +188,7 @@ impl Clients {
     }
 
     /// Errors with [`HandleInboundMessageError::MissingClient`].
+    #[allow(dead_code)]
     fn get_client(&self, uuid: Uuid) -> Result<&Client, HandleInboundMessageError> {
         if let Some(client) = self.clients.get(&uuid) {
             Ok(client)
