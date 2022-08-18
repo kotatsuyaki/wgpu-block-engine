@@ -2214,6 +2214,7 @@ dependencies = [
  "serde",
  "serde-big-array",
  "thiserror",
+ "tokio",
  "tokio-util",
  "tracing",
  "uuid",
